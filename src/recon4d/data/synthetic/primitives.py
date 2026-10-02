@@ -338,7 +338,7 @@ def surface_area(kind: str, scale: Tensor, n_estimate: int = 20000) -> float:
     if kind == "box":
         return float(8.0 * (s[0] * s[1] + s[1] * s[2] + s[0] * s[2]))
     local_area = {"sphere": 4.0 * np.pi, "cylinder": 6.0 * np.pi}[kind]
-    rng = np.random.RandomState(0)  # noqa: NPY002 - frozen legacy stream for reproducibility
+    rng = np.random.RandomState(0)
     _, normals = _sample_local(kind, n_estimate, rng)
     stretch = np.prod(s) * np.linalg.norm(normals / s, axis=1)
     return float(local_area * stretch.mean())

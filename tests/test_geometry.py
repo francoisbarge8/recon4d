@@ -145,7 +145,9 @@ def test_look_at_points_optical_axis_at_target_with_y_down():
     assert torch.allclose(uv[0], torch.tensor([32.0, 24.0], dtype=DT), atol=1e-9)
     assert z[0] > 0
     # ... and a point above the target appears higher in the image (smaller v).
-    above, _ = project(K, transform_points(invert_se3(c2w), (target + torch.tensor([0, 0.2, 0]))[None]))
+    above, _ = project(
+        K, transform_points(invert_se3(c2w), (target + torch.tensor([0, 0.2, 0]))[None])
+    )
     assert above[0, 1] < uv[0, 1]
     assert torch.allclose(camera_centers(invert_se3(c2w)), eye, atol=1e-12)
 
@@ -236,8 +238,10 @@ def test_batched_kabsch():
 def _toy_views(n_views: int = 5):
     K = Intrinsics.from_fov(64, 48, 60.0).matrix(DT)
     eyes = torch.stack(
-        [torch.tensor([math.sin(a) * 3.0, 0.3 * a, math.cos(a) * 3.0], dtype=DT)
-         for a in torch.linspace(-0.5, 0.5, n_views).tolist()]
+        [
+            torch.tensor([math.sin(a) * 3.0, 0.3 * a, math.cos(a) * 3.0], dtype=DT)
+            for a in torch.linspace(-0.5, 0.5, n_views).tolist()
+        ]
     )
     c2w = torch.stack([look_at(e, torch.zeros(3, dtype=DT)) for e in eyes])
     return K, invert_se3(c2w)

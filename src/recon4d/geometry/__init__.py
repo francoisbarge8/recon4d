@@ -67,4 +67,5 @@ __all__ = [
     "triangulate_dlt",
     "triangulation_angles",
     "umeyama",
+    "unproject",
 ]

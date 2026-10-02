@@ -39,7 +39,7 @@ def orbit_trajectory(
     drift linearly. ``shake`` adds smooth hand-held perturbations (metres) to the camera
     position and to the look-at point.
     """
-    rng = np.random.RandomState(seed)  # noqa: NPY002 - frozen legacy stream for reproducibility
+    rng = np.random.RandomState(seed)
     s = np.linspace(0.0, 1.0, n_frames)
     angle = np.deg2rad(angle_start_deg + (angle_end_deg - angle_start_deg) * s)
     r = radius + ((radius_end if radius_end is not None else radius) - radius) * s

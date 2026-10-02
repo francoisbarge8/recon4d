@@ -128,7 +128,9 @@ class Scene:
             t_safe = torch.where(closer, t_hit, torch.zeros_like(t_hit))
             best_t = torch.where(closer, t_hit, best_t)
             best_obj = torch.where(closer, torch.full_like(best_obj, index), best_obj)
-            best_local = torch.where(closer[:, None], o_local + t_safe[:, None] * d_local, best_local)
+            best_local = torch.where(
+                closer[:, None], o_local + t_safe[:, None] * d_local, best_local
+            )
             n_safe = torch.where(closer[:, None], n_local, torch.ones_like(n_local))
             best_normal = torch.where(closer[:, None], pose.normal_to_world(n_safe), best_normal)
             face = torch.where(closer, torch.zeros_like(face), face)
@@ -194,7 +196,11 @@ class Scene:
     # --------------------------------------------------------------------- sampling
 
     def sample_surface_points(
-        self, n: int, rng: np.random.RandomState, t: float = 0.0, dynamic_fraction: float | None = None
+        self,
+        n: int,
+        rng: np.random.RandomState,
+        t: float = 0.0,
+        dynamic_fraction: float | None = None,
     ) -> tuple[Tensor, Tensor]:
         """Sample material points on the scene surfaces.
 
@@ -207,19 +213,19 @@ class Scene:
         lo = np.array(self.room_lo)
         hi = np.array(self.room_hi)
         ext = hi - lo
-        face_areas = np.array(
-            [ext[1] * ext[2], ext[1] * ext[2], ext[0] * ext[2], ext[0] * ext[2], ext[0] * ext[1]]
-            + [ext[0] * ext[1]]
-        )
+        # Two faces per axis, in the order x_min, x_max, floor, ceiling, z_min, z_max.
+        face_areas = np.repeat([ext[1] * ext[2], ext[0] * ext[2], ext[0] * ext[1]], 2)
         poses = self.poses(t)
-        obj_areas = np.array([surface_area(o.kind, p.scale) for o, p in zip(self.objects, poses, strict=True)])
+        obj_areas = np.array(
+            [surface_area(o.kind, p.scale) for o, p in zip(self.objects, poses, strict=True)]
+        )
         dyn = np.array([o.is_dynamic for o in self.objects], dtype=bool)
         static_area = face_areas.sum() + obj_areas[~dyn].sum()
         dynamic_area = obj_areas[dyn].sum()
         if dynamic_fraction is None or dynamic_area == 0:
-            n_dynamic = int(round(n * dynamic_area / (static_area + dynamic_area)))
+            n_dynamic = round(n * float(dynamic_area / (static_area + dynamic_area)))
         else:
-            n_dynamic = int(round(n * dynamic_fraction))
+            n_dynamic = round(n * dynamic_fraction)
         n_static = n - n_dynamic
 
         objs: list[Tensor] = []
@@ -239,7 +245,7 @@ class Scene:
 
         # Static samples are split between the room faces and the static primitives.
         static_obj_area = obj_areas[~dyn].sum()
-        n_room = int(round(n_static * face_areas.sum() / static_area))
+        n_room = round(n_static * float(face_areas.sum() / static_area))
         if static_obj_area == 0:
             n_room = n_static
         face_alloc = rng.multinomial(n_room, face_areas / face_areas.sum())

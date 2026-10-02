@@ -133,12 +133,18 @@ def _object_texture(rng: np.random.RandomState) -> Texture:
     )
 
 
-def _static_object(name: str, rng: np.random.RandomState, x: float, z: float, size: float) -> SceneObject:
+def _static_object(
+    name: str, rng: np.random.RandomState, x: float, z: float, size: float
+) -> SceneObject:
     kind = ("box", "cylinder", "sphere")[rng.randint(3)]
     if kind == "sphere":
         scale = (size, size, size)
     elif kind == "box":
-        scale = (size * rng.uniform(0.7, 1.1), size * rng.uniform(0.7, 1.5), size * rng.uniform(0.7, 1.1))
+        scale = (
+            size * rng.uniform(0.7, 1.1),
+            size * rng.uniform(0.7, 1.5),
+            size * rng.uniform(0.7, 1.1),
+        )
     else:
         scale = (size * 0.8, size * rng.uniform(0.9, 1.6), size * 0.8)
     yaw = rng.uniform(0.0, math.pi)
@@ -193,9 +199,7 @@ def _dynamics(name: str, rng: np.random.RandomState) -> list[SceneObject]:
             _dynamic("ball_back", "sphere", back, rng),
         ]
     if name == "sliding":
-        crate = SlideSpin(
-            (-0.9, 0.2, 0.7), (0.8, 0.2, 0.9), (0.26, 0.2, 0.19), 0.5, 0.3, math.pi
-        )
+        crate = SlideSpin((-0.9, 0.2, 0.7), (0.8, 0.2, 0.9), (0.26, 0.2, 0.19), 0.5, 0.3, math.pi)
         bouncer = Bounce((-1.15, -0.75), (1.05, -1.0), 0.19, 0.55, 2.0, (2.0, 0.5, 3.0))
         return [
             _dynamic("crate", "box", crate, rng),
@@ -203,9 +207,7 @@ def _dynamics(name: str, rng: np.random.RandomState) -> list[SceneObject]:
         ]
     if name == "squash":
         jelly = Squash((0.0, 0.88), (0.27, 0.27, 0.27), 0.32, 1.5, 0.55)
-        can = SlideSpin(
-            (-1.1, 0.22, -0.2), (-0.8, 0.22, 0.65), (0.16, 0.22, 0.16), 0.5, 0.0, 2.5
-        )
+        can = SlideSpin((-1.1, 0.22, -0.2), (-0.8, 0.22, 0.65), (0.16, 0.22, 0.16), 0.5, 0.0, 2.5)
         return [
             _dynamic("jelly", "sphere", jelly, rng),
             _dynamic("can", "cylinder", can, rng),
@@ -227,7 +229,7 @@ def _name_seed(name: str, seed: int) -> int:
 
 def build_scene(name: str, seed: int = 0) -> SceneSpec:
     """Build one of the named benchmark scenes (:data:`SCENE_NAMES`)."""
-    rng = np.random.RandomState(_name_seed(name, seed))  # noqa: NPY002 - frozen legacy stream
+    rng = np.random.RandomState(_name_seed(name, seed))
     objects = _static_layout(rng, n_center=1, n_outer=4) + _dynamics(name, rng)
     scene = Scene(
         room_lo=(-3.0, 0.0, -3.0),
@@ -259,7 +261,7 @@ def random_scene(seed: int) -> SceneSpec:
     Layout, textures, motions and camera are all randomised, but stay inside the same
     grammar as the named scenes.
     """
-    rng = np.random.RandomState(seed)  # noqa: NPY002 - frozen legacy stream
+    rng = np.random.RandomState(seed)
     objects = _static_layout(rng, n_center=int(rng.randint(1, 3)), n_outer=int(rng.randint(2, 6)))
     for i in range(int(rng.randint(0, 4))):
         radius = rng.uniform(0.14, 0.32)

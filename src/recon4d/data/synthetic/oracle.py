@@ -156,7 +156,7 @@ class SceneOracle:
 
     def random_tracks(self, n: int, seed: int = 0, dynamic_fraction: float = 0.4) -> GTTracks:
         """Tracks of ``n`` random material points, ``dynamic_fraction`` of them on movers."""
-        rng = np.random.RandomState(seed)  # noqa: NPY002 - frozen legacy stream
+        rng = np.random.RandomState(seed)
         if not self.scene.dynamic_ids():
             dynamic_fraction = 0.0
         obj, local = self.scene.sample_surface_points(n, rng, dynamic_fraction=dynamic_fraction)
@@ -192,7 +192,7 @@ class SceneOracle:
         cannot be blamed for geometry the camera never saw. ``frames`` restricts the
         visibility test to a subset of frames (default: all).
         """
-        rng = np.random.RandomState(seed)  # noqa: NPY002 - frozen legacy stream
+        rng = np.random.RandomState(seed)
         frames = list(range(self.num_frames)) if frames is None else frames
         obj, local = self.scene.sample_surface_points(n_static, rng, dynamic_fraction=0.0)
         keep = ~self.scene.is_dynamic(obj)

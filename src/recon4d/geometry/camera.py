@@ -39,9 +39,7 @@ class Intrinsics:
 
     @classmethod
     def from_matrix(cls, K: Tensor, width: int, height: int) -> Intrinsics:
-        return cls(
-            float(K[0, 0]), float(K[1, 1]), float(K[0, 2]), float(K[1, 2]), width, height
-        )
+        return cls(float(K[0, 0]), float(K[1, 1]), float(K[0, 2]), float(K[1, 2]), width, height)
 
     def matrix(self, dtype: torch.dtype = torch.float32, device=None) -> Tensor:
         return torch.tensor(

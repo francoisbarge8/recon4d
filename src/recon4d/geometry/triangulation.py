@@ -8,9 +8,7 @@ from torch import Tensor
 from recon4d.geometry.camera import camera_centers, project, transform_points
 
 
-def triangulate_dlt(
-    K: Tensor, w2c: Tensor, uv: Tensor, visible: Tensor
-) -> tuple[Tensor, Tensor]:
+def triangulate_dlt(K: Tensor, w2c: Tensor, uv: Tensor, visible: Tensor) -> tuple[Tensor, Tensor]:
     """Triangulate points from an arbitrary number of calibrated views.
 
     Solves the homogeneous DLT system in normalised image coordinates, restricted to the
@@ -46,7 +44,9 @@ def triangulate_dlt(
     return points.to(uv.dtype), valid
 
 
-def reprojection_errors(K: Tensor, w2c: Tensor, points: Tensor, uv: Tensor) -> tuple[Tensor, Tensor]:
+def reprojection_errors(
+    K: Tensor, w2c: Tensor, points: Tensor, uv: Tensor
+) -> tuple[Tensor, Tensor]:
     """Pixel reprojection error of ``points (N, 3)`` in every view.
 
     Returns ``errors (N, V)`` and ``depths (N, V)`` (z-depth in each camera).

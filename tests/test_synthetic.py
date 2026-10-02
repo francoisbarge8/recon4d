@@ -3,8 +3,8 @@ import math
 import numpy as np
 import pytest
 import torch
-from conftest import tiny_config
 
+from conftest import tiny_config
 from recon4d.data.synthetic import (
     SCENE_NAMES,
     Texture,
@@ -144,7 +144,10 @@ def test_intersections_land_on_the_surface_and_are_nearest(kind):
     assert (_implicit(kind, along.reshape(-1, 3)) > -1e-9).all()
     # Rays reported as misses indeed stay outside along a long stretch.
     miss = ~hit
-    far = origins[miss, None] + torch.linspace(0.0, 3.0, 200, dtype=DTYPE)[None, :, None] * dirs[miss, None]
+    far = (
+        origins[miss, None]
+        + torch.linspace(0.0, 3.0, 200, dtype=DTYPE)[None, :, None] * dirs[miss, None]
+    )
     assert (_implicit(kind, far.reshape(-1, 3)) > -1e-3).all()
 
 
@@ -152,7 +155,7 @@ def test_intersections_land_on_the_surface_and_are_nearest(kind):
 def test_rays_starting_inside_hit_the_far_side(kind):
     origins = torch.zeros(100, 3, dtype=DTYPE)
     dirs = torch.randn(100, 3, dtype=DTYPE)
-    t, normal = INTERSECT[kind](origins, dirs)
+    t, _ = INTERSECT[kind](origins, dirs)
     assert torch.isfinite(t).all() and (t > 0).all()
     assert _implicit(kind, origins + t[:, None] * dirs).abs().max() < 1e-9
 
@@ -170,7 +173,7 @@ def test_surface_sampling_is_uniform_in_world_area():
     """On a stretched box, each face receives samples in proportion to its world area."""
     rng = np.random.RandomState(0)
     scale = torch.tensor([1.0, 3.0, 0.5], dtype=DTYPE)
-    local, normal = sample_surface("box", scale, 20000, rng)
+    _, normal = sample_surface("box", scale, 20000, rng)
     sx, sy, sz = scale.tolist()
     areas = np.array([sy * sz, sx * sz, sx * sy]) * 8.0  # both faces of each axis
     fractions = np.array([(normal[:, k].abs() > 0.5).float().mean().item() for k in range(3)])
@@ -179,7 +182,9 @@ def test_surface_sampling_is_uniform_in_world_area():
 
 
 def test_surface_area_of_scaled_sphere_and_cylinder():
-    assert surface_area("sphere", torch.full((3,), 0.5, dtype=DTYPE)) == pytest.approx(math.pi, rel=1e-6)
+    assert surface_area("sphere", torch.full((3,), 0.5, dtype=DTYPE)) == pytest.approx(
+        math.pi, rel=1e-6
+    )
     # Cylinder of radius 0.5 and half-height 2: side 2*pi*r*h + two caps.
     expected = 2 * math.pi * 0.5 * 4.0 + 2 * math.pi * 0.25
     scale = torch.tensor([0.5, 2.0, 0.5], dtype=DTYPE)
@@ -196,7 +201,7 @@ def test_all_named_scenes_build_and_render():
         c2w = spec.train_c2w(5)
         frame = render_frame(spec.scene, K, c2w[2], 0.5, 24, 32, spp=2)
         assert frame.rgb.shape == (24, 32, 3)
-        assert 0.0 <= frame.rgb.min() and frame.rgb.max() <= 1.0
+        assert frame.rgb.min() >= 0.0 and frame.rgb.max() <= 1.0
         assert frame.rgb.std() > 0.05, "image should be textured"
         assert (frame.depth > 0.3).all() and (frame.depth < 9.0).all()
         has_dynamic = bool(spec.scene.dynamic_ids())
@@ -281,7 +286,9 @@ def test_static_flow_matches_depth_and_pose_reprojection(tiny_still):
     oracle = seq.gt.oracle
     src, dst = 1, 6
     flow, valid = oracle.flow(src, dst)
-    points = backproject_depth(oracle.K, oracle.c2w[src], seq.gt.depth[src].to(DTYPE)).reshape(-1, 3)
+    points = backproject_depth(oracle.K, oracle.c2w[src], seq.gt.depth[src].to(DTYPE)).reshape(
+        -1, 3
+    )
     uv, _ = project(oracle.K, transform_points(invert_se3(oracle.c2w[dst]), points))
     centers = pixel_centers(seq.height, seq.width, dtype=DTYPE).reshape(-1, 2)
     expected = (uv - centers).reshape(seq.height, seq.width, 2).to(torch.float32)
