@@ -18,11 +18,15 @@ class Tracks:
             elsewhere.
         dynamic: optional ``(N,)`` label, True for points on independently moving objects
             (set by motion segmentation).
+        query_frame: optional ``(N,)`` frame at which each track was initialised. There the
+            position is exact by construction, which is what identifies the tracked surface
+            point when a tracker is evaluated.
     """
 
     uv: Tensor
     visible: Tensor
     dynamic: Tensor | None = None
+    query_frame: Tensor | None = None
 
     def __post_init__(self) -> None:
         if self.uv.ndim != 3 or self.uv.shape[-1] != 2:
@@ -37,24 +41,49 @@ class Tracks:
     def num_frames(self) -> int:
         return self.uv.shape[1]
 
+    def _map(self, fn) -> Tracks:
+        return Tracks(
+            fn(self.uv),
+            fn(self.visible),
+            None if self.dynamic is None else fn(self.dynamic),
+            None if self.query_frame is None else fn(self.query_frame),
+        )
+
     def subset(self, index: Tensor) -> Tracks:
         """Select tracks with a boolean mask or an index tensor."""
-        return Tracks(
-            self.uv[index],
-            self.visible[index],
-            None if self.dynamic is None else self.dynamic[index],
-        )
+        return self._map(lambda tensor: tensor[index])
+
+    def to(self, device: torch.device | str) -> Tracks:
+        return self._map(lambda tensor: tensor.to(device))
+
+    def with_labels(self, dynamic: Tensor) -> Tracks:
+        """Copy of the tracks carrying the given dynamic / static labels."""
+        return Tracks(self.uv, self.visible, dynamic, self.query_frame)
 
     def first_visible(self) -> Tensor:
         """``(N,)`` index of the first frame in which each track is observed."""
         return self.visible.to(torch.int64).argmax(dim=1)
 
+    def queries(self) -> tuple[Tensor, Tensor]:
+        """Frame and position ``(N,), (N, 2)`` identifying the tracked surface points.
+
+        Falls back to the first visible frame for tracks without a recorded query.
+        """
+        frames = self.first_visible() if self.query_frame is None else self.query_frame
+        return frames, self.uv[torch.arange(len(self), device=self.uv.device), frames]
+
     @classmethod
     def concatenate(cls, parts: list[Tracks]) -> Tracks:
-        dynamic = None
-        if all(p.dynamic is not None for p in parts):
-            dynamic = torch.cat([p.dynamic for p in parts])
-        return cls(torch.cat([p.uv for p in parts]), torch.cat([p.visible for p in parts]), dynamic)
+        def join(name: str) -> Tensor | None:
+            values = [getattr(p, name) for p in parts]
+            return None if any(v is None for v in values) else torch.cat(values)
+
+        return cls(
+            torch.cat([p.uv for p in parts]),
+            torch.cat([p.visible for p in parts]),
+            join("dynamic"),
+            join("query_frame"),
+        )
 
 
 @dataclass
@@ -80,6 +109,23 @@ class TrainingData:
     depth_valid: Tensor | None = None
     dynamic_mask: Tensor | None = None
     tracks: Tracks | None = None
+
+    def to(self, device: torch.device | str) -> TrainingData:
+        """Copy of the data with every tensor on ``device``."""
+
+        def move(tensor: Tensor | None) -> Tensor | None:
+            return None if tensor is None else tensor.to(device)
+
+        return TrainingData(
+            images=self.images.to(device),
+            K=self.K.to(device),
+            w2c=self.w2c.to(device),
+            train_frames=list(self.train_frames),
+            depth=move(self.depth),
+            depth_valid=move(self.depth_valid),
+            dynamic_mask=move(self.dynamic_mask),
+            tracks=None if self.tracks is None else self.tracks.to(device),
+        )
 
     @property
     def num_frames(self) -> int:

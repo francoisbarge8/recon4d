@@ -113,7 +113,7 @@ class Window:
         )
 
     def to_local(self, uv: Tensor) -> Tensor:
-        return uv - torch.tensor([self.x0, self.y0], dtype=uv.dtype)
+        return uv - uv.new_tensor([self.x0, self.y0])
 
 
 class SceneTrainer:
@@ -151,7 +151,7 @@ class SceneTrainer:
             if MOTION_LOGITS in cloud.params:
                 lrs[MOTION_LOGITS] = cfg.lr_motion_logits
             self.optimizers[name] = CloudOptimizer(cloud, lrs)
-            self.stats[name] = DensificationStats(len(cloud))
+            self.stats[name] = DensificationStats(len(cloud), cloud.means.device)
         self.motion_optimizer = None
         if scene.motion is not None:
             self.motion_optimizer = torch.optim.Adam(
@@ -196,7 +196,7 @@ class SceneTrainer:
             return {}
         if index.numel() > cfg.track_batch:
             choice = torch.randperm(index.numel(), generator=self.generator)[: cfg.track_batch]
-            index = index[choice]
+            index = index[choice.to(index.device)]
         uv_src = window.to_local(tracks.uv[index, frame])
         uv_dst = tracks.uv[index, target]
         maps = torch.cat([out.positions[0], out.alpha[..., None]], dim=-1).permute(2, 0, 1)
@@ -228,7 +228,9 @@ class SceneTrainer:
         if self._neighbors is None or self._neighbors.shape[0] != n:
             canonical = dynamic.means.detach().cpu().numpy().astype(np.float64)
             _, neighbors = cKDTree(canonical).query(canonical, k=k + 1)
-            self._neighbors = torch.as_tensor(neighbors[:, 1:], dtype=torch.int64)
+            self._neighbors = torch.as_tensor(
+                neighbors[:, 1:], dtype=torch.int64, device=dynamic.means.device
+            )
         xa = self.scene.dynamic_means(frame_a)
         xb = self.scene.dynamic_means(frame_b)
         da = torch.sqrt(((xa[:, None] - xa[self._neighbors]) ** 2).sum(dim=-1) + 1e-12)
@@ -407,15 +409,18 @@ def render_views(
 ) -> dict[str, Tensor]:
     """Render the scene from ``w2c (F, 4, 4)`` at the timestamps ``frames`` (no gradients).
 
-    Returns ``color (F, H, W, 3)``, ``depth (F, H, W)``, ``alpha (F, H, W)`` and, for
-    dynamic scenes, ``dynamic (F, H, W)``.
+    The cameras may live on any device: they are moved to the scene's, and the results are
+    returned on the CPU as ``color (F, H, W, 3)``, ``depth (F, H, W)``, ``alpha (F, H, W)``
+    and, for dynamic scenes, ``dynamic (F, H, W)``.
     """
+    device = scene.static.means.device
+    K = K.to(device)
     outputs: dict[str, list[Tensor]] = {"color": [], "depth": [], "alpha": [], "dynamic": []}
-    for pose, frame in zip(w2c, frames, strict=True):
+    for pose, frame in zip(w2c.to(device), frames, strict=True):
         out = scene.render(Camera(K, pose, width, height), frame, settings)
-        outputs["color"].append(out.color.clamp(0.0, 1.0))
-        outputs["depth"].append(out.depth)
-        outputs["alpha"].append(out.alpha)
+        outputs["color"].append(out.color.clamp(0.0, 1.0).cpu())
+        outputs["depth"].append(out.depth.cpu())
+        outputs["alpha"].append(out.alpha.cpu())
         if out.dynamic is not None:
-            outputs["dynamic"].append(out.dynamic)
+            outputs["dynamic"].append(out.dynamic.cpu())
     return {name: torch.stack(values) for name, values in outputs.items() if values}

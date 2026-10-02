@@ -54,8 +54,9 @@ class SurfaceCloud:
     """``(D, T, 3)`` positions over time of points on moving objects."""
     dynamic_observed: Tensor
     """``(D,)`` True when the point is seen in at least ``min_views`` training frames."""
-    dynamic_obj: Tensor
-    """``(D,)`` object index of each dynamic point."""
+    dynamic_first_seen: Tensor
+    """``(D,)`` first frame in which the training camera sees the point (meaningful for
+    observed points)."""
 
 
 class SceneOracle:
@@ -79,6 +80,7 @@ class SceneOracle:
         self.times = [float(t) for t in times]
         self.height = height
         self.width = width
+        self._scene_flow_cache: dict[tuple[int, int], tuple[Tensor, Tensor, Tensor]] = {}
 
     @property
     def num_frames(self) -> int:
@@ -176,18 +178,22 @@ class SceneOracle:
 
         Returns ``flow (H, W, 2)``, ``valid (H, W)`` and ``displacement (H, W, 3)``, the
         world-space displacement between ``src`` and ``dst`` of the surface point seen at
-        each pixel of ``src`` (zero on static surfaces).
+        each pixel of ``src`` (zero on static surfaces). Results are cached.
         """
+        if (src, dst) in self._scene_flow_cache:
+            return self._scene_flow_cache[(src, dst)]
         centers = pixel_centers(self.height, self.width, dtype=DTYPE).reshape(-1, 2)
         obj, local = self.lift(src, centers)
         uv, _, visible, xyz_dst = self.observe(obj, local, [dst])
         xyz_src = self.scene.local_to_world(obj, local, self.times[src])
         shape = (self.height, self.width)
-        return (
+        result = (
             (uv[:, 0] - centers).to(torch.float32).reshape(*shape, 2),
             visible[:, 0].reshape(shape),
             (xyz_dst[:, 0] - xyz_src).to(torch.float32).reshape(*shape, 3),
         )
+        self._scene_flow_cache[(src, dst)] = result
+        return result
 
     # ---------------------------------------------------------------- surface clouds
 
@@ -219,11 +225,12 @@ class SceneOracle:
             _, _, d_visible, _ = self.observe(d_obj, d_local, frames)
             dynamic = self.positions(d_obj, d_local).to(torch.float32)
             dynamic_observed = d_visible.sum(dim=1) >= min_views
+            first_seen = torch.tensor(frames)[d_visible.to(torch.int64).argmax(dim=1)]
         else:
-            d_obj = torch.zeros(0, dtype=torch.int64)
             dynamic = torch.zeros(0, self.num_frames, 3)
             dynamic_observed = torch.zeros(0, dtype=torch.bool)
-        return SurfaceCloud(static, dynamic, dynamic_observed, d_obj)
+            first_seen = torch.zeros(0, dtype=torch.int64)
+        return SurfaceCloud(static, dynamic, dynamic_observed, first_seen)
 
     # ------------------------------------------------------------------ covisibility
 

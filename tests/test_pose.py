@@ -13,6 +13,8 @@ from recon4d.frontend.pose import (
     reconstruct,
     reprojection_residuals,
 )
+from recon4d.frontend.pose.bundle_adjustment import DepthPrior, depth_jacobians, depth_residuals
+from recon4d.frontend.pose.sfm import sample_track_depths
 from recon4d.geometry import Intrinsics, invert_se3, look_at, project, so3_exp, transform_points
 from recon4d.metrics import pose_metrics
 from recon4d.types import Tracks
@@ -21,11 +23,17 @@ DT = torch.float64
 W, H = 160, 120
 
 
-def synthetic_problem(n_cams: int = 8, n_points: int = 120, seed: int = 0, visibility: float = 0.8):
-    """Cameras on an arc looking at a random point cloud, with exact observations."""
+def synthetic_problem(
+    n_cams: int = 8,
+    n_points: int = 120,
+    seed: int = 0,
+    visibility: float = 0.8,
+    arc: float = 0.45,
+):
+    """Cameras on an arc of half-angle ``arc`` looking at a random point cloud."""
     generator = torch.Generator().manual_seed(seed)
     K = Intrinsics.from_fov(W, H, 60.0).matrix(DT)
-    angles = torch.linspace(-0.45, 0.45, n_cams, dtype=DT)
+    angles = torch.linspace(-arc, arc, n_cams, dtype=DT)
     eyes = torch.stack(
         [3.0 * torch.sin(angles), 0.4 * torch.cos(3 * angles), -3.0 * torch.cos(angles)], 1
     )
@@ -138,6 +146,133 @@ def test_huber_loss_resists_outliers():
     ate_plain = pose_metrics(invert_se3(plain.w2c), gt_c2w)["ate"]
     assert ate_robust < 0.2 * ate_plain
     assert ate_robust < 5e-3
+
+
+# ----------------------------------------------------------------------- depth prior
+
+
+def depth_prior_for(
+    problem: BAProblem, w2c, points, scales, affine=False, shifts=None
+) -> DepthPrior:
+    """Exact inverse depths, expressed in each camera's own arbitrary scale (and shift)."""
+    ci, pi = problem.cam_index, problem.point_index
+    z = transform_points(w2c[ci], points[pi][:, None])[:, 0, 2]
+    shift = torch.zeros_like(scales) if shifts is None else shifts
+    # The network's output q satisfies 1 / z = a q + b.
+    inverse = (1.0 / z - shift[ci]) / scales[ci]
+    params = torch.stack([scales, shift], dim=1) * 1.0
+    valid = torch.ones_like(z, dtype=torch.bool)
+    return DepthPrior(inverse, valid, params, affine)
+
+
+def test_depth_prior_jacobians_match_autograd():
+    K, w2c, points, uv, visible = synthetic_problem(n_cams=3, n_points=6)
+    problem = as_problem(K, w2c, points, uv, visible)
+    R, t = w2c[:, :3, :3], w2c[:, :3, 3]
+    ci, pi = problem.cam_index, problem.point_index
+    scales = torch.tensor([0.7, 1.3, 2.1], dtype=DT)
+    shifts = torch.tensor([0.02, -0.01, 0.03], dtype=DT)
+    prior = depth_prior_for(problem, w2c, points, scales, True, shifts)
+    prior.valid[2] = False
+    params = prior.params + 0.05  # away from the exact solution
+    _, cam = reprojection_residuals(R, t, points, K, ci, pi, problem.uv)
+    J_pose, J_point, J_params = depth_jacobians(R, cam, params, prior, ci)
+
+    def residual_of(pose_delta, point_delta, param_delta):
+        dR = so3_exp(pose_delta[:, :3])
+        R_new = dR @ R
+        t_new = (dR @ t[..., None])[..., 0] + pose_delta[:, 3:]
+        _, cam_new = reprojection_residuals(
+            R_new, t_new, points + point_delta, K, ci, pi, problem.uv
+        )
+        return depth_residuals(cam_new, params + param_delta, prior, ci)
+
+    zeros = (torch.zeros(3, 6, dtype=DT), torch.zeros(6, 3, dtype=DT), torch.zeros(3, 2, dtype=DT))
+    auto_pose, auto_point, auto_params = torch.autograd.functional.jacobian(residual_of, zeros)
+    obs = torch.arange(ci.shape[0])
+    assert torch.allclose(auto_pose[obs, ci], J_pose, atol=1e-9)
+    assert torch.allclose(auto_point[obs, pi], J_point, atol=1e-9)
+    assert torch.allclose(auto_params[obs, ci], J_params, atol=1e-9)
+    assert J_pose[2].abs().sum() == 0 and J_params[2].abs().sum() == 0  # the invalid sample
+
+
+def test_bundle_adjustment_with_depth_prior_recovers_the_per_frame_scales():
+    K, w2c, points, uv, visible = synthetic_problem(n_cams=8, n_points=150)
+    noisy_w2c, noisy_points = perturb(w2c, points)
+    problem = as_problem(K, noisy_w2c, noisy_points, uv, visible)
+    scales = torch.linspace(0.4, 2.5, 8, dtype=DT)
+    prior = depth_prior_for(problem, w2c, points, scales)
+    prior.params[:, 0] *= 1.3  # wrong initial alignment
+    problem.depth = prior
+    result = bundle_adjust(problem, huber_delta=None, max_iterations=60)
+    assert result.final_cost < 1e-10
+    # The gauge scale is free: scales are recovered up to one common factor.
+    ratio = result.depth_params[:, 0] / scales
+    assert torch.allclose(ratio, ratio[0].expand(8), rtol=1e-5)
+    assert result.depth_params[:, 1].abs().max() == 0  # the shift is not optimised
+    metrics = pose_metrics(invert_se3(result.w2c), invert_se3(w2c))
+    assert metrics["ate"] < 1e-6
+
+
+def test_affine_depth_prior_recovers_scale_and_shift():
+    K, w2c, points, uv, visible = synthetic_problem(n_cams=6, n_points=150)
+    noisy_w2c, noisy_points = perturb(w2c, points, 0.01, 0.03)
+    problem = as_problem(K, noisy_w2c, noisy_points, uv, visible)
+    scales = torch.linspace(0.6, 1.8, 6, dtype=DT)
+    shifts = torch.linspace(-0.03, 0.05, 6, dtype=DT)
+    prior = depth_prior_for(problem, w2c, points, scales, True, shifts)
+    prior.params[:, 0] *= 0.8
+    prior.params[:, 1] += 0.02
+    problem.depth = prior
+    result = bundle_adjust(problem, huber_delta=None, max_iterations=80)
+    assert result.final_cost < 1e-9
+    assert pose_metrics(invert_se3(result.w2c), invert_se3(w2c))["ate"] < 1e-5
+
+
+def test_depth_prior_sharpens_the_structure_of_a_short_baseline():
+    """With a short baseline and noisy tracks, point depths are barely constrained.
+
+    Relative depths from a monocular network constrain exactly that direction: the depth
+    relief of the reconstruction becomes several times more accurate, even when the prior
+    is weighted for a realistic network (10% depth error ~ 1 pixel).
+    """
+    K, w2c, points, uv, visible = synthetic_problem(
+        n_cams=8, n_points=250, visibility=0.9, arc=0.04
+    )
+    generator = torch.Generator().manual_seed(7)
+    noisy_uv = uv + 0.5 * torch.randn(uv.shape, generator=generator, dtype=DT)
+    problem = as_problem(K, w2c, points, noisy_uv, visible)
+
+    def relief_error(result) -> float:
+        """Median relative depth error in the first camera, up to a global scale."""
+        z = transform_points(result.w2c[0], result.points)[:, 2]
+        z_true = transform_points(w2c[0], points)[:, 2]
+        ratio = z / z_true
+        return float((ratio / ratio.median() - 1.0).abs().median())
+
+    plain = bundle_adjust(problem, max_iterations=50)
+    problem.depth = depth_prior_for(problem, w2c, points, torch.ones(8, dtype=DT))
+    guided = bundle_adjust(problem, max_iterations=50)
+    assert relief_error(plain) > 0.03
+    assert relief_error(guided) < 0.3 * relief_error(plain)
+
+
+def test_sample_track_depths(tiny_still):
+    seq = tiny_still
+    gt = seq.gt.oracle.random_tracks(300, seed=0)
+    tracks = Tracks(gt.uv, gt.visible)
+    inverse, valid = sample_track_depths(tracks, seq.gt.depth, "scale")
+    assert inverse.shape == valid.shape == (300, seq.num_frames)
+    assert not (valid & ~tracks.visible).any()
+    # Exact up to the interpolation of the depth map between pixel centres.
+    relative = (inverse[valid].float() * gt.depth[valid] - 1.0).abs()
+    assert relative.median() < 1e-3 and relative.max() < 0.06
+    # An inverse-depth input gives the same samples.
+    from_disparity, valid2 = sample_track_depths(tracks, 1.0 / seq.gt.depth, "disparity")
+    assert torch.equal(valid, valid2)
+    assert torch.allclose(from_disparity[valid], inverse[valid], rtol=1e-6)
+    with pytest.raises(ValueError):
+        sample_track_depths(tracks, seq.gt.depth, "metric")
 
 
 # --------------------------------------------------------------------- full SfM

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import torch
@@ -61,9 +62,10 @@ class DensifyConfig:
 class DensificationStats:
     """Running average of the screen-space positional gradient of every Gaussian."""
 
-    def __init__(self, n: int) -> None:
-        self.grad_sum = torch.zeros(n)
-        self.count = torch.zeros(n)
+    def __init__(self, n: int, device: torch.device | str = "cpu") -> None:
+        self.device = device
+        self.grad_sum = torch.zeros(n, device=device)
+        self.count = torch.zeros(n, device=device)
 
     def update(self, means2d_grad: Tensor, visible: Tensor, width: int, height: int) -> None:
         """Accumulate ``|dL/d(mean2d)|`` of the Gaussians visible in the last render.
@@ -71,7 +73,7 @@ class DensificationStats:
         Gradients are converted from pixel to NDC units so that the densification threshold
         does not depend on the image resolution.
         """
-        scale = torch.tensor([0.5 * width, 0.5 * height], dtype=means2d_grad.dtype)
+        scale = means2d_grad.new_tensor([0.5 * width, 0.5 * height])
         norm = (means2d_grad * scale).norm(dim=-1)
         self.grad_sum += torch.where(visible, norm, torch.zeros_like(norm))
         self.count += visible.to(self.count.dtype)
@@ -80,8 +82,8 @@ class DensificationStats:
         return self.grad_sum / self.count.clamp_min(1.0)
 
     def reset(self, n: int) -> None:
-        self.grad_sum = torch.zeros(n)
-        self.count = torch.zeros(n)
+        self.grad_sum = torch.zeros(n, device=self.device)
+        self.count = torch.zeros(n, device=self.device)
 
 
 def _select(params: dict[str, Tensor], mask: Tensor) -> dict[str, Tensor]:
@@ -130,10 +132,13 @@ def densify_and_prune(
         std = torch.exp(parents["log_scales"])
         rotation = quat_to_rotmat(parents["quats"])
         for _ in range(2):
-            noise = torch.randn(std.shape, generator=generator, dtype=std.dtype) * std
+            # Sampled on CPU so that the (CPU) generator makes runs reproducible anywhere.
+            noise = (
+                torch.randn(std.shape, generator=generator, dtype=std.dtype).to(std.device) * std
+            )
             child = dict(parents)
             child["means"] = parents["means"] + (rotation @ noise[..., None])[..., 0]
-            child["log_scales"] = parents["log_scales"] - torch.log(torch.tensor(cfg.split_shrink))
+            child["log_scales"] = parents["log_scales"] - math.log(cfg.split_shrink)
             new.append(child)
 
     # Prune: split parents, transparent and oversized Gaussians.

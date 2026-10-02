@@ -29,6 +29,41 @@ def align_trajectory(est_c2w: Tensor, gt_c2w: Tensor, with_scale: bool = True) -
     return sim.to(est_c2w.dtype)
 
 
+def align_frames(est_c2w: Tensor, gt_c2w: Tensor, lever: float | None = None) -> Sim3:
+    """Similarity between two world frames estimated from full camera poses.
+
+    :func:`align_trajectory` only uses the camera *positions*. For the nearly straight
+    camera paths of casual videos this leaves the rotation about the direction of travel
+    poorly determined, and a tilt of one degree displaces a scene five metres away by
+    almost ten centimetres. Whenever the alignment is used to compare geometry or to place
+    a held-out camera, orientations must constrain it too.
+
+    Each camera therefore contributes four points: its centre and three points at distance
+    ``lever`` along its axes. The scale is initialised from the centres and refined in a
+    few fixed-point iterations (the lever must be expressed in each frame's own unit).
+
+    Args:
+        lever: lever arm in ground-truth units (default: the spatial extent of the
+            ground-truth trajectory, at least 1).
+    """
+    est = est_c2w.to(torch.float64)
+    gt = gt_c2w.to(torch.float64)
+    centers_est, centers_gt = est[:, :3, 3], gt[:, :3, 3]
+    sim = umeyama(centers_est, centers_gt)
+    if lever is None:
+        extent = (centers_gt.amax(dim=0) - centers_gt.amin(dim=0)).norm()
+        lever = float(extent.clamp_min(1.0))
+    # Columns of a camera-to-world rotation are the camera axes in world coordinates.
+    axes_est = est[:, :3, :3].transpose(1, 2)  # (T, 3 axes, 3)
+    axes_gt = gt[:, :3, :3].transpose(1, 2)
+    target = torch.cat([centers_gt, (centers_gt[:, None] + lever * axes_gt).reshape(-1, 3)])
+    for _ in range(5):
+        arm = lever / sim.scale
+        source = torch.cat([centers_est, (centers_est[:, None] + arm * axes_est).reshape(-1, 3)])
+        sim = umeyama(source, target)
+    return sim.to(est_c2w.dtype)
+
+
 def absolute_trajectory_error(
     est_c2w: Tensor, gt_c2w: Tensor, with_scale: bool = True
 ) -> tuple[Tensor, Tensor]:

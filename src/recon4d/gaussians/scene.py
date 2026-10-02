@@ -77,6 +77,35 @@ class GaussianScene(nn.Module):
         assert self.dynamic is not None and self.motion is not None
         return self.motion.trajectories(self.dynamic.params[MOTION_LOGITS], self.dynamic.means)
 
+    @torch.no_grad()
+    def transport(self, points: Tensor, frame: int, neighbors: int = 3) -> Tensor:
+        """Follow arbitrary points through time with the scene's motion field.
+
+        A point observed at ``frame`` moves like the dynamic Gaussians around it: the
+        coefficients of its ``neighbors`` nearest dynamic Gaussians at that frame are
+        blended (inverse-distance weights), the point is carried to canonical space, and
+        then to every frame.
+
+        Args:
+            points: ``(N, 3)`` world positions at ``frame``.
+
+        Returns:
+            ``(N, T, 3)`` world positions at every frame.
+        """
+        if not self.is_dynamic:
+            raise ValueError("a static scene has no motion field")
+        motion, dynamic = self.motion, self.dynamic
+        now = self.dynamic_means(frame)
+        k = min(neighbors, now.shape[0])
+        distance, index = torch.cdist(points, now).topk(k, dim=1, largest=False)
+        blend = 1.0 / (distance + 1e-6 * (1.0 + distance.amax()))
+        blend = blend / blend.sum(dim=1, keepdim=True)
+        weights = torch.softmax(dynamic.params[MOTION_LOGITS], dim=-1)[index]  # (N, k, B)
+        logits = torch.log((blend[..., None] * weights).sum(dim=1).clamp_min(1e-8))
+        rotation, translation = motion.blend(logits, frame)
+        canonical = (rotation.transpose(1, 2) @ (points - translation)[..., None])[..., 0]
+        return motion.trajectories(logits, canonical)
+
     def render(
         self,
         camera: Camera,
@@ -116,7 +145,7 @@ class GaussianScene(nn.Module):
         extras: list[Tensor] = []
         render_dynamic_map = self.is_dynamic and with_dynamic_map
         if render_dynamic_map:
-            indicator = torch.zeros(n_static + len(self.dynamic), 1, dtype=static.means.dtype)
+            indicator = static.means.new_zeros(n_static + len(self.dynamic), 1)
             indicator[n_static:] = 1.0
             extras.append(indicator)
         for target in position_frames:

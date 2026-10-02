@@ -16,6 +16,11 @@ RANSAC and the Huber loss make the estimate robust to tracking errors and to ind
 moving objects, whose tracks violate the epipolar geometry of the static scene. Those
 tracks are returned as outliers and are the seed of motion segmentation.
 
+When monocular depth maps are available, the global refinement also uses them as a prior
+on the depth *relief* of the scene (see :class:`~recon4d.frontend.pose.bundle_adjustment.
+DepthPrior`): this removes the stretch along the viewing direction that the systematic
+errors of real trackers otherwise induce.
+
 The minimal solvers (5-point essential matrix, P3P) are OpenCV's; bundle adjustment is the
 PyTorch implementation of :mod:`recon4d.frontend.pose.bundle_adjustment`.
 """
@@ -29,8 +34,8 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from recon4d.frontend.pose.bundle_adjustment import BAProblem, bundle_adjust
-from recon4d.geometry.camera import camera_centers, invert_se3
+from recon4d.frontend.pose.bundle_adjustment import BAProblem, DepthPrior, bundle_adjust
+from recon4d.geometry.camera import camera_centers, invert_se3, sample_depth, transform_points
 from recon4d.geometry.triangulation import (
     reprojection_errors,
     triangulate_dlt,
@@ -59,6 +64,9 @@ class SfMConfig:
             preferred); the others are re-triangulated afterwards.
         refine_focal: also optimise a shared focal length in the final bundle adjustment.
         huber_delta: Huber threshold (pixels) of bundle adjustment.
+        depth_weight: weight of the monocular depth prior in the global bundle adjustment
+            (pixels of reprojection error per unit of relative depth error); 0 disables it.
+        depth_huber: Huber threshold of the depth prior, as a relative depth error.
         seed: RANSAC seed (OpenCV's RNG).
     """
 
@@ -71,6 +79,8 @@ class SfMConfig:
     max_ba_points: int = 2500
     refine_focal: bool = False
     huber_delta: float = 1.0
+    depth_weight: float = 10.0
+    depth_huber: float = 0.1
     seed: int = 0
 
 
@@ -254,6 +264,64 @@ def _register_frame(
     return T
 
 
+def sample_track_depths(tracks: Tracks, depth: Tensor, kind: str) -> tuple[Tensor, Tensor]:
+    """Predicted inverse depth under every track observation.
+
+    Args:
+        depth: ``(T, H, W)`` depth (``kind="scale"``) or inverse depth (``"disparity"``).
+
+    Returns:
+        ``inverse (N, T)`` and ``valid (N, T)``; an observation is valid when the track is
+        visible there and the prediction is not sampled across a depth discontinuity.
+    """
+    if kind not in ("scale", "disparity"):
+        raise ValueError(f"unknown depth kind {kind!r}")
+    depth = depth.to(DTYPE)
+    depth_like = depth if kind == "scale" else 1.0 / depth.clamp_min(1e-9)
+    inverse = torch.zeros(len(tracks), tracks.num_frames, dtype=DTYPE)
+    valid = torch.zeros(len(tracks), tracks.num_frames, dtype=torch.bool)
+    for t in range(tracks.num_frames):
+        value, ok = sample_depth(depth_like[t], tracks.uv[:, t].to(DTYPE))
+        ok = ok & tracks.visible[:, t]
+        inverse[:, t] = torch.where(ok, 1.0 / value.clamp_min(1e-9), torch.zeros_like(value))
+        valid[:, t] = ok
+    return inverse, valid
+
+
+def _depth_prior(
+    w2c: Tensor,
+    points: Tensor,
+    cam_index: Tensor,
+    point_index: Tensor,
+    inverse: Tensor,
+    valid: Tensor,
+    affine: bool,
+    cfg: SfMConfig,
+) -> DepthPrior:
+    """Depth prior of a BA problem, with per-camera alignments fitted to the current map."""
+    n_cams = w2c.shape[0]
+    z = transform_points(w2c[cam_index], points[point_index][:, None])[:, 0, 2]
+    valid = valid & (z > 1e-9) & (inverse > 0)
+    params = torch.zeros(n_cams, 2, dtype=DTYPE)
+    params[:, 0] = 1.0
+    for c in range(n_cams):
+        mine = valid & (cam_index == c)
+        if mine.sum() < 8:
+            valid = valid & (cam_index != c)  # too few samples to align this frame
+            continue
+        target = 1.0 / z[mine]
+        if affine:
+            # Least squares in inverse depth, started from the scale-only solution.
+            q = inverse[mine]
+            A = torch.stack([q, torch.ones_like(q)], dim=1)
+            params[c] = torch.linalg.lstsq(A, target[:, None]).solution[:, 0]
+            if params[c, 0] <= 0:
+                params[c] = torch.tensor([float((target / q).median()), 0.0], dtype=DTYPE)
+        else:
+            params[c, 0] = (target / inverse[mine]).median()
+    return DepthPrior(inverse, valid, params, affine, cfg.depth_weight, cfg.depth_huber)
+
+
 def _run_ba(
     tracks: Tracks,
     K: Tensor,
@@ -265,8 +333,13 @@ def _run_ba(
     fixed_frame: int,
     optimize_focal: bool = False,
     max_iterations: int = 20,
+    depth: tuple[Tensor, Tensor, bool] | None = None,
 ) -> tuple[Tensor, Tensor, Tensor]:
-    """Bundle-adjust the registered cameras and (a subset of) the valid points."""
+    """Bundle-adjust the registered cameras and (a subset of) the valid points.
+
+    ``depth`` holds ``(inverse (N, T), valid (N, T), affine)`` as returned by
+    :func:`sample_track_depths`, to add the monocular depth prior.
+    """
     frames = torch.nonzero(registered)[:, 0]
     point_ids = torch.nonzero(valid)[:, 0]
     if point_ids.numel() > cfg.max_ba_points:
@@ -275,6 +348,19 @@ def _run_ba(
         point_ids = point_ids[torch.argsort(length, descending=True)[: cfg.max_ba_points]]
     vis = tracks.visible[point_ids][:, frames]
     p_local, c_local = torch.nonzero(vis, as_tuple=True)
+    prior = None
+    if depth is not None and cfg.depth_weight > 0:
+        inverse, inverse_valid, affine = depth
+        prior = _depth_prior(
+            w2c[frames],
+            points[point_ids],
+            c_local,
+            p_local,
+            inverse[point_ids][:, frames][p_local, c_local],
+            inverse_valid[point_ids][:, frames][p_local, c_local],
+            affine,
+            cfg,
+        )
     problem = BAProblem(
         w2c=w2c[frames],
         points=points[point_ids],
@@ -283,6 +369,7 @@ def _run_ba(
         uv=tracks.uv[point_ids][:, frames][p_local, c_local].to(DTYPE),
         K=K.to(DTYPE),
         fixed_cameras=frames == fixed_frame,
+        depth=prior,
     )
     result = bundle_adjust(
         problem,
@@ -290,6 +377,9 @@ def _run_ba(
         huber_delta=cfg.huber_delta,
         optimize_focal=optimize_focal,
     )
+    if not (torch.isfinite(result.w2c).all() and torch.isfinite(result.points).all()):
+        logger.warning("bundle adjustment produced non-finite values; keeping the previous map")
+        return w2c, points, K
     w2c = w2c.clone()
     points = points.clone()
     w2c[frames] = result.w2c
@@ -297,17 +387,30 @@ def _run_ba(
     return w2c, points, result.K
 
 
-def reconstruct(tracks: Tracks, K: Tensor, cfg: SfMConfig | None = None) -> SfMResult:
+def reconstruct(
+    tracks: Tracks,
+    K: Tensor,
+    cfg: SfMConfig | None = None,
+    depth: Tensor | None = None,
+    depth_kind: str = "scale",
+) -> SfMResult:
     """Estimate camera poses and sparse structure from point tracks.
 
     Args:
         tracks: 2D tracks over the video.
         K: ``(3, 3)`` intrinsics (an initial guess when ``cfg.refine_focal`` is set).
+        depth: optional ``(T, H, W)`` monocular depth maps (each with its own unknown
+            scale), used as a prior on the depth relief in the global refinement.
+        depth_kind: ``"scale"`` if ``depth`` is a depth up to scale, ``"disparity"`` if
+            it is an affine-invariant inverse depth.
     """
     cfg = cfg or SfMConfig()
     cv2.setRNGSeed(cfg.seed)
     n_frames = tracks.num_frames
     K = K.to(DTYPE).clone()
+    prior = None
+    if depth is not None and cfg.depth_weight > 0:
+        prior = (*sample_track_depths(tracks, depth, depth_kind), depth_kind == "disparity")
     long_enough = tracks.visible.sum(dim=1) >= cfg.min_track_length
 
     a, b, w2c_b, seed_inliers = _select_initial_pair(tracks, K, cfg)
@@ -345,16 +448,45 @@ def reconstruct(tracks: Tracks, K: Tensor, cfg: SfMConfig | None = None) -> SfMR
     # refined cameras (this also re-classifies inliers and outliers).
     for round_index in range(3):
         focal = cfg.refine_focal and round_index > 0
-        w2c, points, K = _run_ba(tracks, K, w2c, registered, points, valid, cfg, a, focal, 30)
+        w2c, points, K = _run_ba(
+            tracks, K, w2c, registered, points, valid, cfg, a, focal, 30, prior
+        )
         points, valid = _triangulate_tracks(tracks, K, w2c, registered, cfg, long_enough)
 
-    # Fix the gauge: world = first registered camera's frame is kept; scale = median depth 1.
-    frames = torch.nonzero(registered)[:, 0]
+    if valid.sum() < 12 or registered.sum() < 2:
+        raise RuntimeError(
+            f"structure-from-motion failed: only {int(valid.sum())} points could be "
+            f"reconstructed from {len(tracks)} tracks ({int(registered.sum())} frames registered)"
+        )
+    return _finalize(tracks, K, w2c, registered, points, valid, cfg, normalize=True)
+
+
+def _finalize(
+    tracks: Tracks,
+    K: Tensor,
+    w2c: Tensor,
+    registered: Tensor,
+    points: Tensor,
+    valid: Tensor,
+    cfg: SfMConfig,
+    normalize: bool,
+) -> SfMResult:
+    """Fix the scale gauge and compute the per-track statistics of a reconstruction."""
+    n_frames = tracks.num_frames
+    w2c = w2c.clone()
+    if not registered.all():
+        # An unregistered frame borrows the pose of its nearest registered neighbour, so
+        # that every frame has a usable (if approximate) pose.
+        known = torch.nonzero(registered)[:, 0]
+        for frame in torch.nonzero(~registered)[:, 0].tolist():
+            w2c[frame] = w2c[known[(known - frame).abs().argmin()]]
     errors, depths = reprojection_errors(K, w2c, points, tracks.uv.to(DTYPE))
     observed = tracks.visible & registered[None, :]
-    scale = depths[valid][observed[valid]].median()
-    points = points / scale
-    w2c[:, :3, 3] = w2c[:, :3, 3] / scale
+    if normalize and valid.any():
+        # World = frame of the seed camera; scale = median depth of the points is 1.
+        scale = depths[valid][observed[valid]].median()
+        points = points / scale
+        w2c[:, :3, 3] = w2c[:, :3, 3] / scale
 
     n_observed = observed.sum(dim=1).clamp_min(1)
     mean_error = (errors * observed).sum(dim=1) / n_observed
@@ -367,8 +499,25 @@ def reconstruct(tracks: Tracks, K: Tensor, cfg: SfMConfig | None = None) -> SfMR
         len(tracks),
         float(mean_error[valid].median()) if valid.any() else float("nan"),
     )
-    del frames
     return SfMResult(w2c, registered, K, points, valid, inlier, mean_error)
+
+
+def triangulate_with_poses(
+    tracks: Tracks, K: Tensor, w2c: Tensor, cfg: SfMConfig | None = None
+) -> SfMResult:
+    """Sparse structure for *known* camera poses (no pose estimation, no rescaling).
+
+    Used when poses come from elsewhere (ground truth, COLMAP, a SLAM system): tracks are
+    triangulated, and classified into static inliers and outliers exactly as
+    :func:`reconstruct` does, so the rest of the pipeline is unchanged.
+    """
+    cfg = cfg or SfMConfig()
+    K = K.to(DTYPE)
+    w2c = w2c.to(DTYPE)
+    registered = torch.ones(tracks.num_frames, dtype=torch.bool)
+    long_enough = tracks.visible.sum(dim=1) >= cfg.min_track_length
+    points, valid = _triangulate_tracks(tracks, K, w2c, registered, cfg, long_enough)
+    return _finalize(tracks, K, w2c, registered, points, valid, cfg, normalize=False)
 
 
 def baseline_ratio(w2c: Tensor, points: Tensor) -> float:

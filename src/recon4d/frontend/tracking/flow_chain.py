@@ -37,7 +37,7 @@ class FlowChainConfig:
         border: points closer than this to the image border are considered lost.
     """
 
-    fb_threshold: float = 1.0
+    fb_threshold: float = 0.5
     grid_stride: int = 4
     keyframe_interval: int = 6
     min_distance: float = 2.0
@@ -99,7 +99,7 @@ class FlowChainTracker(PointTracker):
                 # Lost points keep their last position and are flagged invisible.
                 uv[started, target] = position[started]
                 visible[alive & started, target] = True
-        return Tracks(uv, visible)
+        return Tracks(uv, visible, query_frame=query_frames.clone())
 
     def _detect_and_track(self, images: Tensor) -> tuple[Tensor, Tensor, Tracks]:
         cfg = self.cfg

@@ -7,7 +7,13 @@ from recon4d.frontend.pose.bundle_adjustment import (
     projection_jacobians,
     reprojection_residuals,
 )
-from recon4d.frontend.pose.sfm import SfMConfig, SfMResult, baseline_ratio, reconstruct
+from recon4d.frontend.pose.sfm import (
+    SfMConfig,
+    SfMResult,
+    baseline_ratio,
+    reconstruct,
+    triangulate_with_poses,
+)
 
 __all__ = [
     "BAProblem",
@@ -19,4 +25,5 @@ __all__ = [
     "projection_jacobians",
     "reconstruct",
     "reprojection_residuals",
+    "triangulate_with_poses",
 ]

@@ -76,10 +76,18 @@ def _to_uint8(image: Tensor) -> np.ndarray:
 class DISFlow(FlowEstimator):
     """OpenCV's Dense Inverse Search flow.
 
+    The defaults differ from OpenCV's presets, which are tuned for speed on large images:
+    here the finest pyramid level is the full resolution, patches are smaller and denser,
+    and the variational refinement smooths less. Smoothing flow across depth
+    discontinuities compresses the parallax between near and far surfaces, which matters
+    more for geometry than a slightly noisier flow field.
+
     Args:
         preset: ``"ultrafast"``, ``"fast"`` or ``"medium"`` (most accurate).
-        finest_scale: finest pyramid level used (0 = full resolution). The OpenCV presets
-            stop at a coarser level for speed, which is too coarse for small images.
+        finest_scale: finest pyramid level used (0 = full resolution).
+        patch_size, patch_stride: size and spacing of the matched patches (pixels).
+        smoothness: weight of the smoothness term of the variational refinement
+            (OpenCV's default is 20).
     """
 
     name = "dis"
@@ -89,9 +97,19 @@ class DISFlow(FlowEstimator):
         "medium": cv2.DISOPTICAL_FLOW_PRESET_MEDIUM,
     }
 
-    def __init__(self, preset: str = "medium", finest_scale: int = 0) -> None:
+    def __init__(
+        self,
+        preset: str = "medium",
+        finest_scale: int = 0,
+        patch_size: int = 6,
+        patch_stride: int = 2,
+        smoothness: float = 5.0,
+    ) -> None:
         self.dis = cv2.DISOpticalFlow_create(self._PRESETS[preset])
         self.dis.setFinestScale(finest_scale)
+        self.dis.setPatchSize(patch_size)
+        self.dis.setPatchStride(patch_stride)
+        self.dis.setVariationalRefinementAlpha(smoothness)
 
     def estimate(self, source: Tensor, target: Tensor) -> Tensor:
         a = cv2.cvtColor(_to_uint8(source), cv2.COLOR_RGB2GRAY)
@@ -102,13 +120,20 @@ class DISFlow(FlowEstimator):
 class RAFTFlow(FlowEstimator):
     """torchvision's RAFT; ``small=True`` selects the 1M-parameter variant.
 
-    Images are padded to a multiple of 8 and, when small, up-sampled so that the coarsest
-    feature map is not degenerate; the flow is scaled back accordingly.
+    Images are resized to a multiple of 8 and, when small, up-sampled so that the coarsest
+    feature map is not degenerate; the flow is scaled back accordingly. Inputs and outputs
+    live on the CPU, the network on ``device``.
     """
 
     name = "raft"
 
-    def __init__(self, small: bool = True, iterations: int = 12, min_side: int = 256) -> None:
+    def __init__(
+        self,
+        small: bool = True,
+        iterations: int = 12,
+        min_side: int = 256,
+        device: str | torch.device = "cpu",
+    ) -> None:
         from torchvision.models.optical_flow import (
             Raft_Large_Weights,
             Raft_Small_Weights,
@@ -120,7 +145,8 @@ class RAFTFlow(FlowEstimator):
             self.model = raft_small(weights=Raft_Small_Weights.DEFAULT)
         else:
             self.model = raft_large(weights=Raft_Large_Weights.DEFAULT)
-        self.model.eval()
+        self.model.to(device).eval()
+        self.device = device
         self.iterations = iterations
         self.min_side = min_side
 
@@ -132,12 +158,12 @@ class RAFTFlow(FlowEstimator):
         new_w = round(width * scale / 8.0) * 8
 
         def prepare(image: Tensor) -> Tensor:
-            x = image.permute(2, 0, 1)[None].float() * 2.0 - 1.0
+            x = image.permute(2, 0, 1)[None].float().to(self.device) * 2.0 - 1.0
             return F.interpolate(x, size=(new_h, new_w), mode="bilinear", align_corners=False)
 
         flow = self.model(prepare(source), prepare(target), num_flow_updates=self.iterations)[-1]
         flow = F.interpolate(flow, size=(height, width), mode="bilinear", align_corners=False)[0]
-        flow = flow * torch.tensor([width / new_w, height / new_h])[:, None, None]
+        flow = flow.cpu() * torch.tensor([width / new_w, height / new_h])[:, None, None]
         return flow.permute(1, 2, 0).to(source.dtype)
 
 

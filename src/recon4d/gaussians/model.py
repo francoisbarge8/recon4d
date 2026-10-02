@@ -27,7 +27,7 @@ def knn_scale(points: Tensor, k: int = 3) -> Tensor:
     k = min(k, max(array.shape[0] - 1, 1))
     distances, _ = cKDTree(array).query(array, k=k + 1)
     rms = np.sqrt((distances[:, 1:] ** 2).mean(axis=1))
-    return torch.as_tensor(rms, dtype=points.dtype)
+    return torch.as_tensor(rms, dtype=points.dtype, device=points.device)
 
 
 class GaussianCloud(nn.Module):
@@ -78,17 +78,17 @@ class GaussianCloud(nn.Module):
         """
         n = points.shape[0]
         if scales is None:
-            scales = knn_scale(points) if n > 1 else torch.full((n,), 0.01)
+            scales = knn_scale(points) if n > 1 else points.new_full((n,), 0.01)
         scales = (scales * scale_factor).clamp_min(1e-6)
-        quats = torch.zeros(n, 4, dtype=points.dtype)
+        quats = points.new_zeros(n, 4)
         quats[:, 0] = 1.0
         params = {
             "means": points.clone(),
             "log_scales": torch.log(scales)[:, None].repeat(1, 3).to(points.dtype),
             "quats": quats,
-            "opacity_logits": torch.full((n,), float(inverse_sigmoid(opacity)), dtype=points.dtype),
+            "opacity_logits": points.new_full((n,), float(inverse_sigmoid(opacity))),
             "sh_dc": rgb_to_sh(colors.to(points.dtype))[:, None, :],
-            "sh_rest": torch.zeros(n, num_sh_coeffs(sh_degree) - 1, 3, dtype=points.dtype),
+            "sh_rest": points.new_zeros(n, num_sh_coeffs(sh_degree) - 1, 3),
         }
         params.update(extras or {})
         return cls(params, sh_degree)

@@ -33,7 +33,15 @@ class KLTConfig:
     Attributes:
         window: side of the Lucas-Kanade window in pixels.
         levels: number of pyramid levels above the full resolution.
-        fb_threshold: maximum forward-backward round-trip error (pixels).
+        refine_window: side of the window of a second, single-scale Lucas-Kanade pass
+            started from the result of the first one (0 disables it). A large window on
+            a pyramid is robust to large motions but averages the motion of everything it
+            covers; a small window refines the position on the point's own surface.
+        fb_threshold: maximum forward-backward round-trip error (pixels). It has to be
+            strict: the tracks that survive a loose check are precisely the ones sliding
+            along occlusion boundaries, and their systematic error biases the camera poses
+            (a threshold of 0.7 px instead of 0.4 px costs 2.5% of scale consistency
+            between trajectory and structure on the benchmark).
         max_corners: corners detected per keyframe.
         quality: Shi-Tomasi quality level relative to the best corner.
         min_distance: minimum spacing between tracked points (pixels).
@@ -44,7 +52,8 @@ class KLTConfig:
 
     window: int = 13
     levels: int = 2
-    fb_threshold: float = 0.7
+    refine_window: int = 5
+    fb_threshold: float = 0.4
     max_corners: int = 600
     quality: float = 0.01
     min_distance: int = 5
@@ -58,12 +67,32 @@ class KLTTracker(PointTracker):
     def __init__(self, cfg: KLTConfig | None = None) -> None:
         self.cfg = cfg or KLTConfig()
 
-    def _lk_params(self) -> dict:
-        return {
-            "winSize": (self.cfg.window, self.cfg.window),
-            "maxLevel": self.cfg.levels,
-            "criteria": (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
-        }
+    def _lk(self, source: np.ndarray, target: np.ndarray, points: np.ndarray) -> tuple:
+        """Pyramidal Lucas-Kanade, optionally refined with a small single-scale window."""
+        criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)
+        cfg = self.cfg
+        moved, status, _ = cv2.calcOpticalFlowPyrLK(
+            source,
+            target,
+            points,
+            None,
+            winSize=(cfg.window, cfg.window),
+            maxLevel=cfg.levels,
+            criteria=criteria,
+        )
+        if cfg.refine_window > 0:
+            moved, refined_status, _ = cv2.calcOpticalFlowPyrLK(
+                source,
+                target,
+                points,
+                moved.copy(),
+                winSize=(cfg.refine_window, cfg.refine_window),
+                maxLevel=0,
+                criteria=criteria,
+                flags=cv2.OPTFLOW_USE_INITIAL_FLOW,
+            )
+            status = status & refined_status
+        return moved, status
 
     def _step(
         self, prev: np.ndarray, nxt: np.ndarray, points: np.ndarray
@@ -71,10 +100,9 @@ class KLTTracker(PointTracker):
         """Track ``points (N, 2)`` (OpenCV coordinates) from ``prev`` to ``nxt``."""
         if points.shape[0] == 0:
             return points, np.zeros(0, dtype=bool)
-        params = self._lk_params()
         p0 = points.reshape(-1, 1, 2).astype(np.float32)
-        p1, status1, _ = cv2.calcOpticalFlowPyrLK(prev, nxt, p0, None, **params)
-        back, status0, _ = cv2.calcOpticalFlowPyrLK(nxt, prev, p1, None, **params)
+        p1, status1 = self._lk(prev, nxt, p0)
+        back, status0 = self._lk(nxt, prev, p1)
         round_trip = np.linalg.norm((back - p0).reshape(-1, 2), axis=1)
         p1 = p1.reshape(-1, 2)
         height, width = prev.shape
@@ -116,7 +144,9 @@ class KLTTracker(PointTracker):
                     # A lost point keeps its last position (and is flagged invisible).
                     uv[index, t] = points
                     visible[index[alive], t] = True
-        return Tracks(torch.from_numpy(uv) + 0.5, torch.from_numpy(visible))
+        return Tracks(
+            torch.from_numpy(uv) + 0.5, torch.from_numpy(visible), query_frame=query_frames.clone()
+        )
 
     def _detect_and_track(self, images: Tensor) -> tuple[Tensor, Tensor, Tracks]:
         """Detect Shi-Tomasi corners on keyframes and track them through the video.
