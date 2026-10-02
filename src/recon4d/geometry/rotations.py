@@ -31,22 +31,16 @@ def normalize_quat(q: Tensor, eps: float = 1e-12) -> Tensor:
 
 
 def quat_to_rotmat(q: Tensor) -> Tensor:
-    """Unit (or un-normalised) quaternion ``(..., 4)`` to rotation matrix ``(..., 3, 3)``."""
-    w, x, y, z = normalize_quat(q).unbind(-1)
-    return torch.stack(
-        [
-            1 - 2 * (y * y + z * z),
-            2 * (x * y - w * z),
-            2 * (x * z + w * y),
-            2 * (x * y + w * z),
-            1 - 2 * (x * x + z * z),
-            2 * (y * z - w * x),
-            2 * (x * z - w * y),
-            2 * (y * z + w * x),
-            1 - 2 * (x * x + y * y),
-        ],
-        dim=-1,
-    ).reshape(*q.shape[:-1], 3, 3)
+    """Unit (or un-normalised) quaternion ``(..., 4)`` to rotation matrix ``(..., 3, 3)``.
+
+    Uses ``R = I + 2 w [v]_x + 2 [v]_x^2`` for ``q = (w, v)``, which is the usual
+    element-wise formula written with a handful of tensor operations (this function sits
+    on the hot path of the rasterizer, where the number of operations matters).
+    """
+    q = normalize_quat(q)
+    K = skew(q[..., 1:])
+    eye = torch.eye(3, dtype=q.dtype, device=q.device)
+    return eye + 2.0 * (q[..., :1, None] * K + K @ K)
 
 
 def rotmat_to_quat(R: Tensor) -> Tensor:

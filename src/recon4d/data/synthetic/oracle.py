@@ -168,12 +168,25 @@ class SceneOracle:
         Returns ``flow (H, W, 2)`` in pixels and ``valid (H, W)``, True where the source
         pixel's surface point is visible in ``dst``.
         """
+        flow, valid, _ = self.scene_flow(src, dst)
+        return flow, valid
+
+    def scene_flow(self, src: int, dst: int) -> tuple[Tensor, Tensor, Tensor]:
+        """Optical flow together with the 3D motion that causes it.
+
+        Returns ``flow (H, W, 2)``, ``valid (H, W)`` and ``displacement (H, W, 3)``, the
+        world-space displacement between ``src`` and ``dst`` of the surface point seen at
+        each pixel of ``src`` (zero on static surfaces).
+        """
         centers = pixel_centers(self.height, self.width, dtype=DTYPE).reshape(-1, 2)
         obj, local = self.lift(src, centers)
-        uv, _, visible, _ = self.observe(obj, local, [dst])
-        flow = (uv[:, 0] - centers).to(torch.float32)
-        return flow.reshape(self.height, self.width, 2), visible[:, 0].reshape(
-            self.height, self.width
+        uv, _, visible, xyz_dst = self.observe(obj, local, [dst])
+        xyz_src = self.scene.local_to_world(obj, local, self.times[src])
+        shape = (self.height, self.width)
+        return (
+            (uv[:, 0] - centers).to(torch.float32).reshape(*shape, 2),
+            visible[:, 0].reshape(shape),
+            (xyz_dst[:, 0] - xyz_src).to(torch.float32).reshape(*shape, 3),
         )
 
     # ---------------------------------------------------------------- surface clouds

@@ -16,6 +16,7 @@ from recon4d.geometry.camera import (
     pixel_rays,
     project,
     sample_bilinear,
+    sample_depth,
     transform_points,
     unproject,
 )
@@ -60,6 +61,7 @@ __all__ = [
     "rotmat_to_quat",
     "rotmat_to_rot6d",
     "sample_bilinear",
+    "sample_depth",
     "skew",
     "so3_exp",
     "so3_log",

@@ -9,13 +9,13 @@ pass, so it runs unmodified on CPU and on any accelerator PyTorch supports:
    projection (EWA splatting), ``Sigma' = J W Sigma W^T J^T``, plus a small isotropic
    low-pass filter.
 2. **Binning**: every Gaussian is assigned to the screen tiles overlapped by the bounding
-   box of its footprint; pairs are ordered by ``(tile, depth)`` with one stable sort.
+   box of its footprint; pairs are grouped by tile and depth-sorted inside each tile.
 3. **Compositing** (:func:`rasterize`): inside each tile the Gaussians are alpha-blended
    front to back, ``C = sum_i f_i alpha_i prod_{j<i} (1 - alpha_j)``.
 
 Instead of a per-pixel loop, tiles holding a similar number of Gaussians are grouped into
-buckets and processed as dense ``(tiles, pixels, gaussians)`` tensors. Two details make
-this fast enough for CPU training:
+buckets and processed as dense ``(tiles, pixels, gaussians)`` tensors. Three details make
+this practical without a custom CUDA kernel:
 
 * The exponent of a Gaussian is a quadratic polynomial of the pixel position, so for a
   whole tile it is one small matrix product between per-Gaussian coefficients and a fixed
@@ -24,6 +24,10 @@ this fast enough for CPU training:
   only where ``o exp(-q/2) >= alpha_min``, an ellipse whose axis-aligned box is known in
   closed form. Faint Gaussians touch few tiles, nothing is ever truncated, and the image
   is independent of the tile size.
+* Exponents are clamped from below before ``exp``. Most (tile, Gaussian) pairs evaluate
+  far in the tail, where ``exp`` underflows; on x86 CPUs that path is two orders of
+  magnitude slower than the normal one. The clamp value is far below ``alpha_min``, so
+  the result is unchanged.
 
 Because gradients come from autograd, every input is differentiable, including the camera
 pose, which is what enables photometric pose refinement.
@@ -34,13 +38,35 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import Tensor
 
 from recon4d.geometry.rotations import quat_to_rotmat
 
-_PAD_EXPONENT = -1.0e4  # exp() of this is exactly 0: used for the padded slots of a tile
+# exp(-30) ~ 1e-13 is far below any alpha threshold: exponents are clamped here, and the
+# padded slots of a tile use this value, so that exp() never takes its slow underflow path.
+_MIN_EXPONENT = -30.0
+
+
+def _argsort(values: Tensor) -> Tensor:
+    """``argsort`` that uses NumPy on CPU, where it is an order of magnitude faster than
+    ``torch.sort`` for the array sizes met here (a few thousand to a few 10^5 entries)."""
+    if values.device.type != "cpu":
+        return torch.argsort(values)
+    return torch.from_numpy(np.argsort(values.detach().numpy()))
+
+
+def _group_by_tile(tile_ids: Tensor, n_tiles: int) -> Tensor:
+    """Permutation grouping pairs by tile while preserving their order inside each tile."""
+    if tile_ids.device.type == "cpu" and n_tiles <= 65536:
+        # NumPy's stable sort of 16-bit integers is a radix sort: linear time.
+        keys = tile_ids.numpy().astype(np.uint16)
+        return torch.from_numpy(np.argsort(keys, kind="stable"))
+    # (tile, position) keys are unique, so an unstable sort gives a well-defined order.
+    total = tile_ids.shape[0]
+    return torch.argsort(tile_ids * total + torch.arange(total, device=tile_ids.device))
 
 
 @dataclass(frozen=True)
@@ -131,7 +157,8 @@ def project_gaussians(
 
     Args:
         means: ``(N, 3)`` world-space centres.
-        quats: ``(N, 4)`` rotations ``(w, x, y, z)``; they need not be normalised.
+        quats: rotations, either ``(N, 4)`` quaternions ``(w, x, y, z)`` (they need not be
+            normalised) or ``(N, 3, 3)`` rotation matrices.
         scales: ``(N, 3)`` standard deviations along the local axes.
         K: ``(3, 3)`` intrinsics.
         w2c: ``(4, 4)`` world-to-camera matrix.
@@ -164,7 +191,8 @@ def project_gaussians(
         ],
         dim=-2,
     )
-    M = quat_to_rotmat(quats) * scales[..., None, :]  # R S, so that Sigma = M M^T
+    rotations = quat_to_rotmat(quats) if quats.ndim == 2 else quats
+    M = rotations * scales[..., None, :]  # R S, so that Sigma = M M^T
     T = J @ (R_wc @ M)
     cov = T @ T.transpose(-1, -2)
     a = cov[:, 0, 0] + settings.cov_blur
@@ -226,9 +254,9 @@ def _bin_gaussians(
     span_y = (y1 - y0).clamp_min(0)
     count = torch.where(ex > 0, span_x * span_y, torch.zeros_like(span_x))
 
-    # Enumerate pairs with the Gaussians taken front to back; a *stable* sort by tile
-    # index then leaves each tile's list depth-sorted.
-    order = torch.argsort(depths)
+    # Enumerate pairs with the Gaussians taken front to back: a *stable* sort by tile index
+    # then groups the pairs by tile while keeping each tile's list depth-sorted.
+    order = _argsort(depths)
     count_sorted = count[order]
     total = int(count_sorted.sum())
     if total == 0:
@@ -240,7 +268,8 @@ def _bin_gaussians(
     local = torch.arange(total, device=device) - torch.repeat_interleave(first, count_sorted)
     width_g = span_x[gaussian_ids]
     tile_ids = (y0[gaussian_ids] + local // width_g) * tiles_x + x0[gaussian_ids] + local % width_g
-    tile_ids, permutation = torch.sort(tile_ids, stable=True)
+    permutation = _group_by_tile(tile_ids, n_tiles)
+    tile_ids = tile_ids[permutation]
     tile_count = torch.bincount(tile_ids, minlength=n_tiles)
     tile_start = torch.cumsum(tile_count, dim=0) - tile_count
     return gaussian_ids[permutation], tile_ids, tile_start, tile_count
@@ -302,15 +331,15 @@ def rasterize(
     #   -1/2 [a (du + px)^2 + c (dv + py)^2] - b (du + px)(dv + py) + log o,
     # is a polynomial in (px, py). Its coefficients are computed once for all pairs.
     # The clamp keeps the gradient of log(o) finite for opacities that are exactly zero.
-    pair_gaussians = gaussian_ids[:n_pairs]
+    # (``index_select`` rather than fancy indexing: its backward is a plain ``index_add``.)
     log_opacity = torch.log((opacities * projection.compensation).clamp_min(1e-10))
-    mean = projection.means2d[pair_gaussians]
-    du = center_x - mean[:, 0]
-    dv = center_y - mean[:, 1]
-    ca, cb, cc = projection.conics[pair_gaussians].unbind(-1)
+    per_gaussian = torch.cat([projection.means2d, projection.conics, log_opacity[:, None]], dim=1)
+    mx, my, ca, cb, cc, lo = per_gaussian.index_select(0, gaussian_ids[:n_pairs]).unbind(-1)
+    du = center_x - mx
+    dv = center_y - my
     coeffs = torch.stack(
         [
-            -0.5 * (ca * du * du + cc * dv * dv) - cb * du * dv + log_opacity[pair_gaussians],
+            -0.5 * (ca * du * du + cc * dv * dv) - cb * du * dv + lo,
             -ca * du - cb * dv,
             -cc * dv - cb * du,
             -0.5 * ca,
@@ -320,7 +349,7 @@ def rasterize(
         dim=-1,
     )  # (pairs, 6)
     pad = coeffs.new_zeros(1, 6)
-    pad[0, 0] = _PAD_EXPONENT
+    pad[0, 0] = _MIN_EXPONENT
     coeffs = torch.cat([coeffs, pad])
 
     tile_lists: list[Tensor] = []
@@ -333,17 +362,18 @@ def rasterize(
         chunk = max(1, settings.chunk_elements // (k * n_pix))
         for tiles in torch.split(tiles_b, chunk):
             index = tile_start[tiles][:, None] + slot
-            index = torch.where(slot < tile_count[tiles][:, None], index, n_pairs)  # (S, K)
+            index = torch.where(slot < tile_count[tiles][:, None], index, n_pairs).reshape(-1)
+            tile_coeffs = coeffs.index_select(0, index).reshape(-1, k, 6)  # (S, K, 6)
+            tile_features = features.index_select(0, gaussian_ids[index]).reshape(-1, k, n_channels)
 
-            power = torch.matmul(basis, coeffs[index].transpose(1, 2))  # (S, P, K)
-            alpha = F.threshold(
-                torch.exp(power).clamp_max(settings.alpha_max), settings.alpha_min, 0.0
-            )
+            power = torch.matmul(basis, tile_coeffs.transpose(1, 2))  # (S, P, K)
+            alpha = torch.exp(power.clamp_min(_MIN_EXPONENT)).clamp_max(settings.alpha_max)
+            alpha = F.threshold(alpha, settings.alpha_min, 0.0)
             transmittance = torch.cumprod(1.0 - alpha, dim=2)
             weights = alpha * torch.cat(
                 [torch.ones_like(transmittance[..., :1]), transmittance[..., :-1]], dim=2
             )
-            colors.append(torch.bmm(weights, features[gaussian_ids[index]]))  # (S, P, C)
+            colors.append(torch.bmm(weights, tile_features))  # (S, P, C)
             alphas.append(1.0 - transmittance[..., -1])  # sum of the weights
             tile_lists.append(tiles)
 

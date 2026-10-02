@@ -169,3 +169,39 @@ def in_image(uv: Tensor, height: int, width: int, margin: float = 0.0) -> Tensor
         & (uv[..., 1] >= margin)
         & (uv[..., 1] <= height - margin)
     )
+
+
+def sample_depth(
+    depth: Tensor, uv: Tensor, max_ratio: float = 1.05, valid: Tensor | None = None
+) -> tuple[Tensor, Tensor]:
+    """Sample a depth map ``(H, W)`` at continuous positions ``uv (N, 2)``.
+
+    Plain bilinear interpolation of depth is wrong in two ways: it is biased on slanted
+    surfaces (in a perspective image it is the *inverse* depth of a plane that is linear),
+    and across an occlusion boundary it invents a depth that belongs to neither surface.
+    Here the inverse depth of the four surrounding pixel centres is interpolated, and a
+    sample is rejected when
+
+    * it lies outside the image,
+    * one of the four depths is non-positive (or flagged by ``valid (H, W)``), or
+    * the four depths span a ratio larger than ``max_ratio`` (a depth discontinuity).
+
+    Returns ``depth (N,)`` (0 where rejected) and ``ok (N,)``.
+    """
+    height, width = depth.shape
+    x = uv[:, 0] - 0.5
+    y = uv[:, 1] - 0.5
+    x0 = torch.floor(x)
+    y0 = torch.floor(y)
+    wx = (x - x0).to(depth.dtype)
+    wy = (y - y0).to(depth.dtype)
+    cols = torch.stack([x0, x0 + 1], dim=-1).clamp(0, width - 1).to(torch.int64)
+    rows = torch.stack([y0, y0 + 1], dim=-1).clamp(0, height - 1).to(torch.int64)
+    corners = depth[rows[:, :, None], cols[:, None, :]].reshape(-1, 4)  # (N, 4): 00 01 10 11
+    weights = torch.stack([(1 - wx) * (1 - wy), wx * (1 - wy), (1 - wx) * wy, wx * wy], dim=-1)
+    lowest = corners.amin(dim=-1)
+    ok = in_image(uv, height, width) & (lowest > 0) & (corners.amax(dim=-1) <= max_ratio * lowest)
+    if valid is not None:
+        ok = ok & valid[rows[:, :, None], cols[:, None, :]].reshape(-1, 4).all(dim=-1)
+    inverse = (weights / corners.clamp_min(1e-12)).sum(dim=-1)
+    return torch.where(ok, 1.0 / inverse.clamp_min(1e-12), torch.zeros_like(inverse)), ok
