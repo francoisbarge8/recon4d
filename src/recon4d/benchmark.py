@@ -151,8 +151,14 @@ def run_one(
     seed: int = 0,
     extra_overrides: tuple[str, ...] = (),
     cache_dir: Path | None = None,
+    figures: bool = True,
 ) -> Metrics:
-    """Run one (scene, variant) pair, or load its metrics if it has already been run."""
+    """Run one (scene, variant) pair, or load its metrics if it has already been run.
+
+    ``figures`` also writes the qualitative outputs (videos, point clouds, checkpoint) of
+    the main variants; metrics are always written first, so a run is never lost to a
+    failure while rendering figures.
+    """
     metrics_file = out_dir / "metrics.json"
     if metrics_file.exists():
         return load_json(metrics_file)
@@ -168,10 +174,12 @@ def run_one(
     scene_metrics["temporal"].update(metrics.pop("temporal"))
     metrics.update(scene_metrics)
     metrics["timings"] = dict(result.timings)
-    if variant in _WITH_FIGURES:
-        save_run(out_dir, seq, result, metrics)
-    else:
-        save_json(metrics_file, metrics)
+    save_json(metrics_file, metrics)
+    if figures and variant in _WITH_FIGURES:
+        try:
+            save_run(out_dir, seq, result)
+        except OSError as error:  # e.g. a full disk: the metrics are safe, carry on
+            logger.warning("could not write the figures of %s/%s: %s", scene, variant, error)
     return metrics
 
 
@@ -184,6 +192,7 @@ def run_benchmark(
     lpips: str | None = None,
     seed: int = 0,
     extra_overrides: tuple[str, ...] = (),
+    figures: bool = True,
 ) -> dict[str, dict[str, Metrics]]:
     """Run the benchmark and write ``results.json`` and ``results.md`` in ``out``.
 
@@ -209,6 +218,7 @@ def run_benchmark(
                 seed,
                 extra_overrides,
                 cache_dir=out / "cache",
+                figures=figures,
             )
     return collect_results(out, profile)
 

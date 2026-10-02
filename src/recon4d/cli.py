@@ -136,6 +136,7 @@ def benchmark(
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
     lpips: Annotated[str | None, typer.Option(help="LPIPS backbone (alex, vgg, squeeze)")] = None,
     seed: int = 0,
+    figures: Annotated[bool, typer.Option(help="Also write videos and point clouds")] = True,
 ) -> None:
     """Run the benchmark (scenes x pipeline variants) and write the result tables.
 
@@ -152,6 +153,7 @@ def benchmark(
         lpips=lpips,
         seed=seed,
         extra_overrides=tuple(overrides or ()),
+        figures=figures,
     )
 
 
