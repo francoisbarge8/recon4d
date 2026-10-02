@@ -75,11 +75,14 @@ class MotionBases(nn.Module):
         translation = torch.einsum("nb,btk->ntk", weights, self.trans)
         return (rotation @ canonical[:, None, :, None])[..., 0] + translation
 
-    def smoothness(self) -> Tensor:
-        """Mean squared acceleration of the basis trajectories (translation and rotation)."""
+    def smoothness(self, extent: float = 1.0) -> Tensor:
+        """Mean squared acceleration of the basis trajectories (translation and rotation).
+
+        Translations are divided by ``extent`` so that the penalty is scale-free.
+        """
         if self.num_frames < 3:
             return self.trans.new_zeros(())
-        accel_t = self.trans[:, 2:] - 2.0 * self.trans[:, 1:-1] + self.trans[:, :-2]
+        accel_t = (self.trans[:, 2:] - 2.0 * self.trans[:, 1:-1] + self.trans[:, :-2]) / extent
         accel_r = self.rot6d[:, 2:] - 2.0 * self.rot6d[:, 1:-1] + self.rot6d[:, :-2]
         return (accel_t**2).mean() + (accel_r**2).mean()
 
@@ -110,6 +113,36 @@ def kmeans(points: Tensor, k: int, iterations: int = 30, seed: int = 0) -> Tenso
     return labels
 
 
+def _robust_kabsch(src: Tensor, dst: Tensor) -> tuple[Tensor, Tensor]:
+    """Rigid transform ``dst ~ R src + t`` with one re-weighting pass against outliers."""
+    weights = torch.ones(1, src.shape[0], dtype=src.dtype)
+    R, t = batched_kabsch(src[None], dst[None], weights)
+    residual = ((src @ R[0].T + t[0]) - dst).norm(dim=-1)
+    inlier = residual <= 3.0 * residual.median().clamp_min(1e-12)
+    if inlier.sum() >= 3 and not inlier.all():
+        R, t = batched_kabsch(src[None], dst[None], inlier[None].to(src.dtype))
+    return R[0], t[0]
+
+
+def _linked_bases(points: Tensor, labels: Tensor, num_bases: int, factor: float = 3.0) -> Tensor:
+    """``(B, B)`` adjacency of the clusters: True when two clusters touch each other.
+
+    Two clusters are linked when their closest points are no farther apart than ``factor``
+    times the typical spacing between neighbouring points, i.e. when they are most likely
+    two parts of the same object.
+    """
+    distance = torch.cdist(points, points)
+    distance.fill_diagonal_(float("inf"))
+    spacing = distance.amin(dim=1).median()
+    linked = torch.zeros(num_bases, num_bases, dtype=torch.bool)
+    for a in range(num_bases):
+        for b in range(a + 1, num_bases):
+            between = distance[labels == a][:, labels == b]
+            if between.numel() > 0 and between.min() <= factor * spacing:
+                linked[a, b] = linked[b, a] = True
+    return linked
+
+
 def init_motion_bases(
     tracks_xyz: Tensor,
     visible: Tensor,
@@ -117,69 +150,103 @@ def init_motion_bases(
     canonical_frame: int | None = None,
     seed: int = 0,
 ) -> tuple[MotionBases, Tensor, Tensor, int]:
-    """Initialise motion bases from 3D point tracks.
+    """Initialise motion bases from 3D point tracks, chaining through time.
 
-    1. The canonical frame is the one in which most tracks are visible.
-    2. Tracks are clustered by k-means on their (zero-filled) frame-to-frame velocities,
-       so that points moving alike end up together.
-    3. For every cluster and frame, the rigid transform from the canonical frame is the
-       closed-form Procrustes alignment of the cluster's visible points. Frames where a
-       cluster is not observed copy the nearest observed frame.
+    Tracks on moving objects are often short: a point on a rolling ball is visible for a
+    fraction of a turn only. The initialisation therefore never relies on a track spanning
+    the video. Instead it sweeps away from a canonical frame and, at each new frame,
+
+    1. estimates the rigid transform of every basis from the tracks that already have a
+       canonical position and are visible in that frame (closed-form Procrustes, with one
+       re-weighting pass against outliers);
+    2. lets a basis with too few such tracks follow a neighbouring basis of the same
+       object (it applies the same frame-to-frame motion), or keep its previous transform
+       when it has no such neighbour;
+    3. adopts the tracks appearing in that frame: each takes the basis of its nearest
+       already-labelled neighbour and gets a canonical position by undoing that basis'
+       transform.
+
+    Bases are seeded by k-means on the positions of the tracks visible in the canonical
+    frame, so different objects, or different parts of one object, start in different
+    bases; parts that move alike simply end up with identical trajectories.
 
     Args:
         tracks_xyz: ``(N, T, 3)`` world positions of tracked points (arbitrary where
             invisible).
         visible: ``(N, T)`` validity of those positions.
         num_bases: number of rigid trajectories ``B``.
+        canonical_frame: reference frame (default: the one with most visible tracks).
 
     Returns:
-        ``(bases, logits (N, B), canonical (N, 3), canonical_frame)``. Only tracks visible
-        in the canonical frame have a meaningful canonical position; for the others the
-        position at their best-observed frame is mapped back with their cluster's motion.
+        ``(bases, logits (N, B), canonical (N, 3), canonical_frame)``. Tracks that could
+        never be attached to a basis get uniform coefficients.
     """
     n, n_frames, _ = tracks_xyz.shape
     dtype = tracks_xyz.dtype
     if canonical_frame is None:
         canonical_frame = int(visible.sum(dim=0).argmax())
 
-    both = visible[:, 1:] & visible[:, :-1]
-    velocity = torch.where(both[..., None], tracks_xyz[:, 1:] - tracks_xyz[:, :-1], 0.0)
-    labels = kmeans(velocity.reshape(n, -1), num_bases, seed=seed)
-    num_bases = max(int(labels.max()) + 1, 1) if n > 0 else num_bases
+    label = torch.full((n,), -1, dtype=torch.int64)
+    canonical = torch.zeros(n, 3, dtype=dtype)
+    seeds = torch.nonzero(visible[:, canonical_frame])[:, 0]
+    num_bases = max(min(num_bases, seeds.numel()), 1)
+    linked = torch.zeros(num_bases, num_bases, dtype=torch.bool)
+    if seeds.numel() > 0:
+        label[seeds] = kmeans(tracks_xyz[seeds, canonical_frame], num_bases, seed=seed)
+        canonical[seeds] = tracks_xyz[seeds, canonical_frame]
+        if seeds.numel() > 1:
+            linked = _linked_bases(canonical[seeds], label[seeds], num_bases)
 
     rotations = torch.eye(3, dtype=dtype).repeat(num_bases, n_frames, 1, 1)
     translations = torch.zeros(num_bases, n_frames, 3, dtype=dtype)
-    for b in range(num_bases):
-        members = labels == b
-        anchor = members & visible[:, canonical_frame]
-        if anchor.sum() < 3:
-            continue
-        src = tracks_xyz[anchor, canonical_frame]  # (M, 3)
-        dst = tracks_xyz[anchor].transpose(0, 1)  # (T, M, 3)
-        weights = visible[anchor].transpose(0, 1).to(dtype)
-        R, t = batched_kabsch(src[None].expand(n_frames, -1, -1), dst, weights)
-        observed = weights.sum(dim=1) >= 3
-        # Fill unobserved frames with the nearest observed one.
-        observed_index = torch.nonzero(observed)[:, 0]
-        if observed_index.numel() == 0:
-            continue
-        frames = torch.arange(n_frames)
-        nearest = observed_index[(frames[:, None] - observed_index[None]).abs().argmin(dim=1)]
-        rotations[b] = R[nearest]
-        translations[b] = t[nearest]
+    sweeps = (
+        range(canonical_frame + 1, n_frames),
+        range(canonical_frame - 1, -1, -1),
+    )
+    for sweep in sweeps:
+        previous = canonical_frame
+        for frame in sweep:
+            here = visible[:, frame]
+            support = torch.zeros(num_bases, dtype=torch.int64)
+            for b in range(num_bases):
+                members = here & (label == b)
+                support[b] = members.sum()
+                if support[b] >= 3:
+                    R, t = _robust_kabsch(canonical[members], tracks_xyz[members, frame])
+                    rotations[b, frame], translations[b, frame] = R, t
+            for b in torch.nonzero(support < 3)[:, 0].tolist():
+                donors = linked[b] & (support >= 3)
+                if donors.any():
+                    # Follow the best supported neighbour: apply its frame-to-frame motion.
+                    d = int(torch.where(donors, support, -1).argmax())
+                    step = rotations[d, frame] @ rotations[d, previous].T
+                    rotations[b, frame] = step @ rotations[b, previous]
+                    translations[b, frame] = (
+                        step @ (translations[b, previous] - translations[d, previous])
+                        + translations[d, frame]
+                    )
+                else:
+                    rotations[b, frame] = rotations[b, previous]
+                    translations[b, frame] = translations[b, previous]
+            new = here & (label < 0)
+            known = here & (label >= 0)
+            if new.any() and known.any():
+                nearest = torch.cdist(tracks_xyz[new, frame], tracks_xyz[known, frame]).argmin(
+                    dim=1
+                )
+                adopted = label[known][nearest]
+                R, t = rotations[adopted, frame], translations[adopted, frame]
+                offset = (tracks_xyz[new, frame] - t)[..., None]
+                canonical[new] = (R.transpose(1, 2) @ offset)[..., 0]
+                label[new] = adopted
+            previous = frame
 
-    bases = MotionBases(rotations, translations)
-
-    # Canonical positions: observed directly, or mapped back from the best other frame.
-    logits = torch.full((n, num_bases), -4.0, dtype=dtype)
-    logits[torch.arange(n), labels] = 4.0
-    canonical = tracks_xyz[:, canonical_frame].clone()
-    missing = ~visible[:, canonical_frame]
-    if missing.any():
-        first_visible = visible.to(torch.int64).argmax(dim=1)
-        for i in torch.nonzero(missing)[:, 0].tolist():
-            f = int(first_visible[i])
-            R = rotations[labels[i], f]
-            t = translations[labels[i], f]
-            canonical[i] = R.T @ (tracks_xyz[i, f] - t)
-    return bases, logits, canonical, canonical_frame
+    logits = torch.zeros(n, num_bases, dtype=dtype)
+    assigned = label >= 0
+    logits[assigned] = -4.0
+    logits[assigned, label[assigned]] = 4.0
+    orphans = ~assigned
+    if orphans.any():
+        first = visible[orphans].to(torch.int64).argmax(dim=1)
+        canonical[orphans] = tracks_xyz[orphans, first]
+    return MotionBases(rotations, translations), logits, canonical, canonical_frame

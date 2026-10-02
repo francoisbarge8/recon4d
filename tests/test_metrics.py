@@ -224,17 +224,29 @@ def test_ate_measures_position_noise():
     )
 
 
-def test_orientation_error_and_rpe_of_a_constant_camera_roll():
+def test_orientation_error_is_measured_after_rotation_alignment():
+    gt = _trajectory()
+    roll = so3_exp(torch.tensor([0.0, 0.0, math.radians(5.0)], dtype=torch.float64))
+    # One camera out of 20 is rolled by 5 degrees about its optical axis. The best global
+    # rotation absorbs 1/20 of it, leaving 19/20 on that camera and 1/20 on the others.
+    est = gt.clone()
+    est[7, :3, :3] = gt[7, :3, :3] @ roll
+    metrics = pose_metrics(est, gt)
+    assert metrics["ate"] == pytest.approx(0.0, abs=1e-9)
+    assert metrics["rot_deg"] == pytest.approx(2 * 5.0 * 19 / 400, rel=0.01)
+
+
+def test_rpe_of_a_constant_camera_roll_is_second_order():
     gt = _trajectory()
     roll = so3_exp(torch.tensor([0.0, 0.0, math.radians(5.0)], dtype=torch.float64))
     est = gt.clone()
     est[:, :3, :3] = gt[:, :3, :3] @ roll  # every camera rolled by 5 degrees about its axis
     metrics = pose_metrics(est, gt)
-    assert metrics["ate"] == pytest.approx(0.0, abs=1e-9)
-    assert metrics["rot_deg"] == pytest.approx(5.0, abs=1e-6)
-    # A constant camera-frame error conjugates the relative rotations: the relative error
-    # is the commutator of the roll with the frame-to-frame rotation, a second-order term.
-    assert 0.0 < metrics["rpe_rot_deg"] < 0.1 * metrics["rot_deg"]
+    # No rotation of the world can undo a roll of each camera about its own axis ...
+    assert 1.0 < metrics["rot_deg"] <= 5.0
+    # ... but it only conjugates the relative rotations: the relative error is the
+    # commutator of the roll with the frame-to-frame rotation, a second-order term.
+    assert 0.0 < metrics["rpe_rot_deg"] < 0.1 * 5.0
 
 
 def test_rpe_detects_a_single_bad_frame():

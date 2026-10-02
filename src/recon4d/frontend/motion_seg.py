@@ -113,8 +113,8 @@ def flow_residuals(
             for other in (t - step, t + step):
                 if not 0 <= other < n_frames:
                     continue
-                observed = flow.estimate(images[t], images[other])
-                reverse = flow.estimate(images[other], images[t])
+                observed = flow.between(images, t, other)
+                reverse = flow.between(images, other, t)
                 reliable = forward_backward_error(observed, reverse) < cfg.fb_threshold
                 rigid, valid = rigid_flow(depth[t], K, w2c[t], w2c[other])
                 residual = (observed - rigid).norm(dim=-1) - cfg.relative_threshold * rigid.norm(

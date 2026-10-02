@@ -34,7 +34,10 @@ def tapvid_metrics(
         ``occlusion_accuracy``; ``pts_within_k`` (fraction of visible points tracked
         within ``k`` pixels) and their mean ``delta_avg``; ``jaccard_k`` and their mean
         ``average_jaccard`` (position and visibility jointly); ``epe`` (mean error in
-        *original* pixels over the visible points).
+        *original* pixels over the visible points); ``epe_tracked`` (the same, restricted
+        to the points the tracker itself reports as visible, i.e. the accuracy of the
+        tracks it actually delivers) and ``track_length`` (mean number of frames a track
+        is reported visible).
     """
     n_frames = gt_visible.shape[1]
     evaluate = torch.arange(n_frames)[None, :] != query_frames[:, None]
@@ -63,6 +66,9 @@ def tapvid_metrics(
     metrics["average_jaccard"] = sum(jaccard_all) / len(jaccard_all)
     raw = (pred_uv - gt_uv).norm(dim=-1)
     metrics["epe"] = float((raw * gt_vis).sum() / n_gt)
+    both = gt_vis & pred_vis
+    metrics["epe_tracked"] = float((raw * both).sum() / both.sum().clamp_min(1))
+    metrics["track_length"] = float(pred_visible.sum(dim=1).to(torch.float32).mean())
     return metrics
 
 

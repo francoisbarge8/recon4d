@@ -263,7 +263,7 @@ class SceneTrainer:
             if cfg.lambda_rigid > 0:
                 terms["rigid"] = self._rigidity_loss(frame, other)
             if cfg.lambda_smooth > 0:
-                terms["smooth"] = self.scene.motion.smoothness()
+                terms["smooth"] = self.scene.motion.smoothness(self.extent)
         return terms
 
     def _total(self, terms: dict[str, Tensor]) -> Tensor:

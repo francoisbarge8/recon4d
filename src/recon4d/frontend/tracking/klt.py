@@ -106,13 +106,15 @@ class KLTTracker(PointTracker):
                 points = start[index].copy()
                 alive = np.ones(index.shape[0], dtype=bool)
                 t = int(q)
-                while 0 <= t + direction < n_frames and alive.any():
-                    moved, ok = self._step(gray[t], gray[t + direction], points[alive])
-                    points[alive] = moved
-                    survivors = np.flatnonzero(alive)
-                    alive[survivors[~ok]] = False
+                while 0 <= t + direction < n_frames:
+                    if alive.any():
+                        moved, ok = self._step(gray[t], gray[t + direction], points[alive])
+                        survivors = np.flatnonzero(alive)
+                        points[survivors[ok]] = moved[ok]
+                        alive[survivors[~ok]] = False
                     t += direction
-                    uv[index[alive], t] = points[alive]
+                    # A lost point keeps its last position (and is flagged invisible).
+                    uv[index, t] = points
                     visible[index[alive], t] = True
         return Tracks(torch.from_numpy(uv) + 0.5, torch.from_numpy(visible))
 

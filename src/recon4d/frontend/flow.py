@@ -32,6 +32,10 @@ class FlowEstimator(ABC):
     def estimate(self, source: Tensor, target: Tensor) -> Tensor:
         """Flow ``(H, W, 2)`` such that ``source(x)`` matches ``target(x + flow(x))``."""
 
+    def between(self, images: Tensor, src: int, dst: int) -> Tensor:
+        """Flow from frame ``src`` to frame ``dst`` of a video ``(T, H, W, 3)``."""
+        return self.estimate(images[src], images[dst])
+
     def sequence(self, images: Tensor, step: int = 1) -> tuple[Tensor, Tensor]:
         """Forward and backward flows between frames ``t`` and ``t + step`` of a video.
 
@@ -40,9 +44,29 @@ class FlowEstimator(ABC):
         """
         forward, backward = [], []
         for t in range(images.shape[0] - step):
-            forward.append(self.estimate(images[t], images[t + step]))
-            backward.append(self.estimate(images[t + step], images[t]))
+            forward.append(self.between(images, t, t + step))
+            backward.append(self.between(images, t + step, t))
         return torch.stack(forward), torch.stack(backward)
+
+
+class OracleFlow(FlowEstimator):
+    """Ground-truth flow of a synthetic sequence (an analysis tool, not an estimator).
+
+    The flow of an occluded pixel points to where its surface point *would* project, as a
+    perfect estimator would extrapolate; the forward-backward check then flags it, exactly
+    as it does for estimated flow.
+    """
+
+    name = "oracle"
+
+    def __init__(self, oracle) -> None:
+        self.oracle = oracle
+
+    def estimate(self, source: Tensor, target: Tensor) -> Tensor:
+        raise NotImplementedError("OracleFlow needs frame indices: use between()")
+
+    def between(self, images: Tensor, src: int, dst: int) -> Tensor:
+        return self.oracle.flow(src, dst)[0].to(images.dtype)
 
 
 def _to_uint8(image: Tensor) -> np.ndarray:

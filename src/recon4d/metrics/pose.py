@@ -63,12 +63,30 @@ def relative_pose_error(
     return torch.sqrt((trans**2).mean()), torch.sqrt((rot**2).mean())
 
 
+def orientation_errors(est_c2w: Tensor, gt_c2w: Tensor) -> Tensor:
+    """Per-frame orientation error (radians) after the best global rotation alignment.
+
+    The rotation between the two world frames is estimated from the orientations
+    themselves, as the chordal mean of ``R_gt R_est^T``. Deriving it from the camera
+    *positions* instead (as the ATE alignment does) is ill-conditioned for the nearly
+    straight camera paths of casual videos, where a rotation about the direction of travel
+    barely moves the positions.
+    """
+    R_est, R_gt = est_c2w[:, :3, :3], gt_c2w[:, :3, :3]
+    U, _, Vh = torch.linalg.svd((R_gt @ R_est.transpose(1, 2)).sum(dim=0))
+    d = torch.ones(3, dtype=R_est.dtype)
+    d[2] = torch.sign(torch.det(U @ Vh))
+    alignment = U @ torch.diag(d) @ Vh
+    return rotation_angle(R_gt.transpose(1, 2) @ (alignment @ R_est))
+
+
 def pose_metrics(est_c2w: Tensor, gt_c2w: Tensor, with_scale: bool = True) -> dict[str, float]:
     """All trajectory metrics as floats.
 
     * ``ate``: absolute trajectory error (RMSE, ground-truth units);
     * ``rpe_trans``, ``rpe_rot_deg``: frame-to-frame relative pose error;
-    * ``rot_deg``: mean absolute orientation error after alignment (degrees);
+    * ``rot_deg``: mean absolute orientation error (degrees), see
+      :func:`orientation_errors`;
     * ``scale``: the alignment scale (ground-truth units per estimated unit).
     """
     est = est_c2w.to(torch.float64)
@@ -76,7 +94,7 @@ def pose_metrics(est_c2w: Tensor, gt_c2w: Tensor, with_scale: bool = True) -> di
     sim = align_trajectory(est, gt, with_scale)
     aligned = sim.apply_to_c2w(est)
     position_error = (aligned[:, :3, 3] - gt[:, :3, 3]).norm(dim=-1)
-    rotation_error = rotation_angle(gt[:, :3, :3].transpose(1, 2) @ aligned[:, :3, :3])
+    rotation_error = orientation_errors(est, gt)
     rpe_trans, rpe_rot = relative_pose_error(est, gt, 1, sim.scale)
     return {
         "ate": float(torch.sqrt((position_error**2).mean())),

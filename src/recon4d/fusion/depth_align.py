@@ -38,9 +38,13 @@ class DepthAlignConfig:
             it is an affine-invariant inverse depth.
         grid: resolution ``(rows, cols)`` of the smooth correction field; ``None`` keeps
             the global alignment only.
-        grid_smoothness: weight of the penalty on differences between neighbouring nodes.
-        grid_prior: weight of the penalty pulling every node to zero correction.
-        huber_delta: Huber threshold of the robust fits, as a relative depth error.
+        grid_smoothness: weight of the penalty on differences between neighbouring nodes,
+            relative to the data weight of an average node.
+        grid_prior: weight of the penalty pulling every node to zero correction, relative
+            to the data weight of an average node.
+        robust_scale: smallest scale of the Cauchy loss of the robust fits, as a relative
+            depth error (the scale adapts to the spread of the residuals above this
+            floor); residuals well above the scale are treated as outliers.
         min_points: frames with fewer sparse depths reuse the parameters of their nearest
             well-constrained frame.
         irls_iterations: number of re-weighting iterations.
@@ -48,9 +52,9 @@ class DepthAlignConfig:
 
     kind: str = "scale"
     grid: tuple[int, int] | None = (4, 5)
-    grid_smoothness: float = 3.0
-    grid_prior: float = 0.3
-    huber_delta: float = 0.05
+    grid_smoothness: float = 0.01
+    grid_prior: float = 0.001
+    robust_scale: float = 0.05
     min_points: int = 12
     irls_iterations: int = 8
 
@@ -67,48 +71,68 @@ class AlignedDepth:
     """``(T,)`` number of sparse depths used per frame."""
 
 
-def _huber(residual: Tensor, delta: float) -> Tensor:
-    magnitude = residual.abs().clamp_min(1e-12)
-    return torch.where(magnitude <= delta, torch.ones_like(magnitude), delta / magnitude)
+def _robust_weights(residual: Tensor, floor: float) -> Tensor:
+    """IRLS weights of the Cauchy loss, ``1 / (1 + (r / c)^2)``, with an adaptive scale.
+
+    Unlike Huber's, the influence of a residual vanishes as it grows, so gross outliers
+    (mis-triangulated points, tracks sitting on an occlusion boundary) do not bias the fit.
+
+    The scale ``c`` follows the spread of the residuals (2.385 robust standard deviations,
+    the 95%-efficiency tuning of the Cauchy loss) and never drops below ``floor``. A fixed
+    small scale would be wrong here: when the model cannot represent the data exactly, as a
+    single scale facing a spatially varying error, the inliers themselves have large
+    residuals, and treating them as outliers makes the fit collapse.
+    """
+    sigma = 1.4826 * (residual - residual.median()).abs().median()
+    scale = torch.clamp(2.385 * sigma, min=floor)
+    return 1.0 / (1.0 + (residual / scale) ** 2)
 
 
-def fit_scale(pred: Tensor, target: Tensor, delta: float, iterations: int) -> Tensor:
+def fit_scale(pred: Tensor, target: Tensor, scale: float, iterations: int) -> Tensor:
     """Robust ``s`` minimising the relative error of ``s * pred`` w.r.t. ``target``.
 
     The fit is done in log space, where the model is a pure offset: start from the median
-    and refine with Huber IRLS.
+    and refine by iteratively re-weighted least squares.
     """
     log_ratio = torch.log(target) - torch.log(pred)
     offset = log_ratio.median()
     for _ in range(iterations):
-        w = _huber(log_ratio - offset, delta)
+        w = _robust_weights(log_ratio - offset, scale)
         offset = (w * log_ratio).sum() / w.sum()
     return torch.exp(offset)
 
 
 def fit_scale_shift(
-    pred: Tensor, target: Tensor, delta: float, iterations: int
+    pred: Tensor, target: Tensor, scale: float, iterations: int
 ) -> tuple[Tensor, Tensor]:
-    """Robust ``(a, b)`` such that ``a * pred + b`` matches ``target`` (Huber IRLS).
+    """Robust ``(a, b)`` such that ``a * pred + b`` matches ``target``.
 
-    Residuals are normalised by the median of ``target`` so that ``delta`` is relative.
+    The fit starts from a Theil-Sen estimate (median of the slopes between random pairs of
+    samples, then median intercept), which tolerates a large fraction of outliers, and is
+    refined by iteratively re-weighted least squares. Residuals are normalised by the
+    median of ``target`` so that ``scale`` is a relative error.
     """
-    scale = target.median().clamp_min(1e-12)
-    w = torch.ones_like(pred)
-    a = torch.ones((), dtype=pred.dtype)
-    b = torch.zeros((), dtype=pred.dtype)
-    for _ in range(iterations + 1):
+    norm = target.median().abs().clamp_min(1e-12)
+    n = pred.shape[0]
+    generator = torch.Generator().manual_seed(0)
+    i = torch.randint(n, (2000,), generator=generator)
+    j = torch.randint(n, (2000,), generator=generator)
+    dx = pred[i] - pred[j]
+    usable = dx.abs() > 1e-12
+    if usable.sum() < 2:
+        return (target.median() / pred.median().clamp_min(1e-12)).to(pred.dtype), pred.new_zeros(())
+    a = ((target[i] - target[j])[usable] / dx[usable]).median()
+    b = (target - a * pred).median()
+    for _ in range(iterations):
+        w = _robust_weights((a * pred + b - target) / norm, scale)
         sw = w.sum()
         sx, sy = (w * pred).sum(), (w * target).sum()
         sxx, sxy = (w * pred * pred).sum(), (w * pred * target).sum()
         det = sw * sxx - sx * sx
         if det.abs() < 1e-18:
-            a = (target.median() / pred.median().clamp_min(1e-12)).to(pred.dtype)
-            b = torch.zeros((), dtype=pred.dtype)
             break
         a = (sw * sxy - sx * sy) / det
         b = (sy - a * sx) / sw
-        w = _huber((a * pred + b - target) / scale, delta)
     return a, b
 
 
@@ -157,17 +181,17 @@ def fit_correction_field(
 ) -> Tensor:
     """Smooth log-scale field ``g`` with ``g(uv_i) ~ log_error_i``; returns ``(rows, cols)``.
 
-    Solves ``min_g sum_i w_i (B_i g - e_i)^2 + n (l_s |D g|^2 + l_p |g|^2)`` by IRLS, where
-    ``B`` holds bilinear interpolation weights and ``D`` neighbour differences. The
-    regularisation is scaled by the number of samples ``n`` so that its strength does not
-    depend on how many tracks happen to be visible.
+    Solves ``min_g sum_i w_i (B_i g - e_i)^2 + m (l_s |D g|^2 + l_p |g|^2)`` by IRLS, where
+    ``B`` holds bilinear interpolation weights and ``D`` neighbour differences. ``m`` is the
+    number of samples per grid node, so that the regularisation is expressed relative to
+    the data term and does not depend on how many tracks happen to be visible.
     """
     grid = cfg.grid
     B = _bilinear_weights(uv.to(DTYPE), height, width, grid)
     e = log_error.to(DTYPE)
-    n = float(uv.shape[0])
     D = _smoothness_matrix(grid)
-    regulariser = n * (
+    per_node = uv.shape[0] / B.shape[1]
+    regulariser = per_node * (
         cfg.grid_smoothness * D.T @ D + cfg.grid_prior * torch.eye(B.shape[1], dtype=DTYPE)
     )
     w = torch.ones_like(e)
@@ -175,7 +199,7 @@ def fit_correction_field(
     for _ in range(cfg.irls_iterations):
         A = B.T @ (B * w[:, None]) + regulariser
         g = torch.linalg.solve(A, B.T @ (w * e))
-        w = _huber(B @ g - e, cfg.huber_delta)
+        w = _robust_weights(B @ g - e, cfg.robust_scale)
     return g.reshape(grid)
 
 
@@ -231,9 +255,12 @@ def align_depth_maps(
     for t in constrained.tolist():
         _, value, z = samples[t]
         if cfg.kind == "scale":
-            params[t] = (fit_scale(value, z, cfg.huber_delta, cfg.irls_iterations), torch.zeros(()))
+            params[t] = (
+                fit_scale(value, z, cfg.robust_scale, cfg.irls_iterations),
+                torch.zeros(()),
+            )
         else:
-            params[t] = fit_scale_shift(1.0 / value, 1.0 / z, cfg.huber_delta, cfg.irls_iterations)
+            params[t] = fit_scale_shift(1.0 / value, 1.0 / z, cfg.robust_scale, cfg.irls_iterations)
     for t in range(n_frames):
         source = int(constrained[(constrained - t).abs().argmin()])
         a, b = params[source]
