@@ -13,7 +13,8 @@ from recon4d.fusion.pointcloud import backproject_frames
 from recon4d.gaussians.scene import GaussianScene
 from recon4d.gaussians.trainer import render_views
 from recon4d.geometry.camera import invert_se3, look_at
-from recon4d.pipeline import PipelineResult
+from recon4d.io.colmap import export_dataset
+from recon4d.pipeline import FrontendResult, PipelineResult
 from recon4d.utils import get_logger, save_json
 from recon4d.viz import (
     colorize_depth,
@@ -62,6 +63,27 @@ def orbit_poses(w2c: Tensor, depth: Tensor, n_views: int = 24, amplitude: float 
     return invert_se3(torch.stack(poses))
 
 
+def export_colmap(out_dir: str | Path, seq: VideoSequence, frontend: FrontendResult) -> Path:
+    """Write the frames, poses and sparse points of the front-end as a COLMAP dataset.
+
+    The folder (``images/`` and ``sparse/0/``) opens in COLMAP's GUI and can be fed to the
+    training scripts of other 3DGS / NeRF implementations.
+    """
+    sfm = frontend.sfm
+    pose_tracks = frontend.tracks.subset(torch.arange(frontend.n_pose_tracks))
+    return export_dataset(
+        out_dir,
+        seq.images,
+        frontend.K,
+        frontend.w2c,
+        pose_tracks,
+        sfm.points,
+        sfm.inlier,
+        sfm.reproj_error,
+        frontend.registered,
+    )
+
+
 def save_run(
     out_dir: str | Path,
     seq: VideoSequence,
@@ -69,6 +91,7 @@ def save_run(
     metrics: Metrics | None = None,
     fps: float = 12.0,
     scale: int = 2,
+    colmap: bool = False,
 ) -> None:
     """Write the qualitative and quantitative outputs of a pipeline run to ``out_dir``.
 
@@ -79,7 +102,9 @@ def save_run(
     * ``reconstruction.gif`` - input | render | rendered depth at the estimated poses;
     * ``wiggle.gif`` - the scene from a small orbit around the middle view, time frozen;
     * ``bullet_time.gif`` - time advancing while the camera orbits (dynamic scenes);
-    * ``val*.gif`` - ground truth | render for the held-out cameras of synthetic scenes.
+    * ``val*.gif`` - ground truth | render for the held-out cameras of synthetic scenes;
+    * ``colmap/`` - with ``colmap=True``, the frames and the sparse reconstruction as a
+      COLMAP dataset (see :func:`export_colmap`).
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -103,6 +128,8 @@ def save_run(
         stride=2,
     )
     save_point_cloud(out_dir / "points.ply", points, colors)
+    if colmap:
+        export_colmap(out_dir / "colmap", seq, frontend)
 
     near = float(torch.quantile(frontend.depth[frontend.depth_valid][::7], 0.02))
     far = float(torch.quantile(frontend.depth[frontend.depth_valid][::7], 0.98))

@@ -11,7 +11,7 @@ from recon4d.viz.images import (
     side_by_side,
     to_uint8,
 )
-from recon4d.viz.ply import load_ply_vertices, save_gaussians, save_point_cloud
+from recon4d.viz.ply import load_ply_vertices, save_gaussians, save_mesh, save_point_cloud
 
 __all__ = [
     "colorize",
@@ -22,6 +22,7 @@ __all__ = [
     "save_gaussians",
     "save_gif",
     "save_image",
+    "save_mesh",
     "save_point_cloud",
     "save_video",
     "side_by_side",

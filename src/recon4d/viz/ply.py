@@ -45,6 +45,43 @@ def save_point_cloud(path: str | Path, points: Tensor, colors: Tensor | None = N
     _write_ply(Path(path), names, formats, columns)
 
 
+def save_mesh(
+    path: str | Path, vertices: Tensor, faces: Tensor, colors: Tensor | None = None
+) -> None:
+    """Write a triangle mesh (``vertices (V, 3)``, ``faces (F, 3)``, optional RGB in
+    ``[0, 1]`` per vertex) as a binary PLY."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    xyz = vertices.detach().cpu().numpy().astype("<f4")
+    fields = [("x", "<f4"), ("y", "<f4"), ("z", "<f4")]
+    header = ["ply", "format binary_little_endian 1.0", f"element vertex {xyz.shape[0]}"]
+    header += ["property float x", "property float y", "property float z"]
+    if colors is not None:
+        fields += [("red", "u1"), ("green", "u1"), ("blue", "u1")]
+        header += ["property uchar red", "property uchar green", "property uchar blue"]
+    vertex_data = np.empty(xyz.shape[0], dtype=np.dtype(fields))
+    vertex_data["x"], vertex_data["y"], vertex_data["z"] = xyz[:, 0], xyz[:, 1], xyz[:, 2]
+    if colors is not None:
+        rgb = (colors.detach().cpu().clamp(0, 1) * 255).round().to(torch.uint8).numpy()
+        vertex_data["red"], vertex_data["green"], vertex_data["blue"] = (
+            rgb[:, 0],
+            rgb[:, 1],
+            rgb[:, 2],
+        )
+    triangles = faces.detach().cpu().numpy().astype("<i4")
+    face_data = np.empty(triangles.shape[0], dtype=np.dtype([("n", "u1"), ("v", "<i4", (3,))]))
+    face_data["n"], face_data["v"] = 3, triangles
+    header += [
+        f"element face {triangles.shape[0]}",
+        "property list uchar int vertex_indices",
+        "end_header",
+    ]
+    with path.open("wb") as file:
+        file.write(("\n".join(header) + "\n").encode("ascii"))
+        file.write(vertex_data.tobytes())
+        file.write(face_data.tobytes())
+
+
 def save_gaussians(
     path: str | Path,
     cloud: GaussianCloud,
@@ -87,12 +124,14 @@ def save_gaussians(
 def load_ply_vertices(path: str | Path) -> dict[str, np.ndarray]:
     """Read back the vertex properties of a binary PLY written by this module."""
     with Path(path).open("rb") as file:
-        names, formats, count = [], [], 0
+        names, formats, count, element = [], [], 0, ""
         while True:
             line = file.readline().decode("ascii").strip()
-            if line.startswith("element vertex"):
-                count = int(line.split()[-1])
-            elif line.startswith("property"):
+            if line.startswith("element"):
+                element = line.split()[1]
+                if element == "vertex":
+                    count = int(line.split()[-1])
+            elif line.startswith("property") and element == "vertex":
                 _, kind, name = line.split()
                 names.append(name)
                 formats.append({"float": "<f4", "uchar": "u1"}[kind])

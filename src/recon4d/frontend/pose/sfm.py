@@ -16,10 +16,11 @@ RANSAC and the Huber loss make the estimate robust to tracking errors and to ind
 moving objects, whose tracks violate the epipolar geometry of the static scene. Those
 tracks are returned as outliers and are the seed of motion segmentation.
 
-When monocular depth maps are available, the global refinement also uses them as a prior
-on the depth *relief* of the scene (see :class:`~recon4d.frontend.pose.bundle_adjustment.
-DepthPrior`): this removes the stretch along the viewing direction that the systematic
-errors of real trackers otherwise induce.
+The global refinement can also use monocular depth maps as a prior on the depth *relief*
+of the scene (see :class:`~recon4d.frontend.pose.bundle_adjustment.DepthPrior`). It is
+**off by default** (``depth_weight=0``): it helps when the baseline is too short for the
+tracks to constrain the relief, but the low-frequency errors of a monocular prediction
+are systematic, and with a healthy baseline they leak into the reconstruction instead.
 
 The minimal solvers (5-point essential matrix, P3P) are OpenCV's; bundle adjustment is the
 PyTorch implementation of :mod:`recon4d.frontend.pose.bundle_adjustment`.
@@ -65,7 +66,8 @@ class SfMConfig:
         refine_focal: also optimise a shared focal length in the final bundle adjustment.
         huber_delta: Huber threshold (pixels) of bundle adjustment.
         depth_weight: weight of the monocular depth prior in the global bundle adjustment
-            (pixels of reprojection error per unit of relative depth error); 0 disables it.
+            (pixels of reprojection error per unit of relative depth error); 0, the
+            default, disables it. Meant for short baselines (try 10).
         depth_huber: Huber threshold of the depth prior, as a relative depth error.
         seed: RANSAC seed (OpenCV's RNG).
     """
@@ -79,7 +81,7 @@ class SfMConfig:
     max_ba_points: int = 2500
     refine_focal: bool = False
     huber_delta: float = 1.0
-    depth_weight: float = 10.0
+    depth_weight: float = 0.0
     depth_huber: float = 0.1
     seed: int = 0
 
@@ -503,21 +505,33 @@ def _finalize(
 
 
 def triangulate_with_poses(
-    tracks: Tracks, K: Tensor, w2c: Tensor, cfg: SfMConfig | None = None
+    tracks: Tracks,
+    K: Tensor,
+    w2c: Tensor,
+    cfg: SfMConfig | None = None,
+    registered: Tensor | None = None,
+    normalize: bool = False,
 ) -> SfMResult:
-    """Sparse structure for *known* camera poses (no pose estimation, no rescaling).
+    """Sparse structure for *known* camera poses (no pose estimation).
 
     Used when poses come from elsewhere (ground truth, COLMAP, a SLAM system): tracks are
     triangulated, and classified into static inliers and outliers exactly as
     :func:`reconstruct` does, so the rest of the pipeline is unchanged.
+
+    Args:
+        registered: ``(T,)`` frames whose pose is known (default: all). The others borrow
+            the pose of their nearest registered neighbour.
+        normalize: rescale the world so that the median depth of the points is 1, as
+            :func:`reconstruct` does (poses of arbitrary scale, e.g. COLMAP's).
     """
     cfg = cfg or SfMConfig()
     K = K.to(DTYPE)
     w2c = w2c.to(DTYPE)
-    registered = torch.ones(tracks.num_frames, dtype=torch.bool)
+    if registered is None:
+        registered = torch.ones(tracks.num_frames, dtype=torch.bool)
     long_enough = tracks.visible.sum(dim=1) >= cfg.min_track_length
     points, valid = _triangulate_tracks(tracks, K, w2c, registered, cfg, long_enough)
-    return _finalize(tracks, K, w2c, registered, points, valid, cfg, normalize=False)
+    return _finalize(tracks, K, w2c, registered, points, valid, cfg, normalize=normalize)
 
 
 def baseline_ratio(w2c: Tensor, points: Tensor) -> float:

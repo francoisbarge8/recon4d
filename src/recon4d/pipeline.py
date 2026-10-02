@@ -56,7 +56,7 @@ logger = get_logger(__name__)
 DEPTH_BACKENDS = ("oracle", "oracle-noisy", "depth-anything", "learned")
 TRACKER_BACKENDS = ("klt", "flow-chain", "cotracker", "oracle")
 FLOW_BACKENDS = ("dis", "raft", "raft-large", "oracle")
-POSE_BACKENDS = ("sfm", "gt")
+POSE_BACKENDS = ("sfm", "colmap", "gt")
 
 
 @dataclass
@@ -74,7 +74,8 @@ class PipelineConfig:
             the pose tracks only.
         flow: optical flow back-end, one of :data:`FLOW_BACKENDS`; used by motion
             segmentation and by the flow-chain tracker.
-        poses: ``"sfm"`` estimates the poses, ``"gt"`` uses the ground truth.
+        poses: ``"sfm"`` estimates the poses from the pose tracks, ``"colmap"`` asks COLMAP
+            (needs ``pycolmap``), ``"gt"`` uses the ground truth.
         dynamic: reconstruct moving objects (False: plain static 3DGS).
         device: device of the scene optimisation.
         seed: seed of every random number generator.
@@ -252,6 +253,12 @@ def run_frontend(seq: VideoSequence, cfg: PipelineConfig) -> FrontendResult:
         elif cfg.poses == "gt":
             gt = _require_gt(seq, "ground-truth pose")
             sfm = triangulate_with_poses(pose_tracks, seq.K(), invert_se3(gt.c2w), cfg.sfm)
+        elif cfg.poses == "colmap":
+            from recon4d.frontend.pose.colmap import colmap_poses
+
+            known = seq.K(torch.float64) if seq.intrinsics is not None else None
+            K, w2c, registered = colmap_poses(images, known, focal_guess=cfg.focal_guess)
+            sfm = triangulate_with_poses(pose_tracks, K, w2c, cfg.sfm, registered, normalize=True)
         else:
             raise ValueError(f"unknown pose back-end {cfg.poses!r}; choose among {POSE_BACKENDS}")
     K = sfm.K.to(torch.float32)

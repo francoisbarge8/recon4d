@@ -46,12 +46,10 @@ dependencies = [
 lpips = ["lpips>=0.1.4"]
 # Pretrained monocular depth (Depth Anything V2) through Hugging Face transformers.
 depth = ["transformers>=4.45"]
-# TSDF meshing, ICP and interactive viewers.
-open3d = ["open3d>=0.18"]
 # COLMAP structure-from-motion as an alternative pose backend.
 colmap = ["pycolmap>=3.10"]
 dev = ["pytest>=7.4", "ruff>=0.5"]
-all = ["recon4d[lpips,depth,open3d,colmap,dev]"]
+all = ["recon4d[lpips,depth,colmap,dev]"]
 
 [project.scripts]
 recon4d = "recon4d.cli:app"

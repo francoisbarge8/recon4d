@@ -12,6 +12,7 @@ Runs are resumable: a (scene, variant) pair whose ``metrics.json`` exists is not
 from __future__ import annotations
 
 import math
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -120,22 +121,27 @@ VARIANTS: dict[str, tuple[str, tuple[str, ...]]] = {
         "global depth alignment only (no correction field)",
         ("align.grid=null",),
     ),
-    "no-depth-prior-ba": (
-        "bundle adjustment on tracks alone (no monocular depth prior)",
-        ("sfm.depth_weight=0",),
+    "depth-prior-ba": (
+        "bundle adjustment with the monocular depth prior (off by default)",
+        ("sfm.depth_weight=10",),
     ),
-    # Back-end swaps: these need pretrained weights (downloaded on first use).
+    # Back-end swaps: these need pretrained weights (downloaded on first use) or pycolmap.
     "depth-anything": (
         "zero-shot Depth Anything V2 (small) instead of the default depth back-end",
         ("depth=depth-anything",),
     ),
     "cotracker": ("CoTracker3 as the dense tracker", ("tracker=cotracker",)),
     "raft": ("RAFT optical flow instead of DIS", ("flow=raft",)),
+    "colmap": (
+        "camera poses from COLMAP (pycolmap) instead of the track-based SfM",
+        ("poses=colmap",),
+    ),
 }
 
-DEFAULT_VARIANTS = tuple(
-    name for name in VARIANTS if name not in ("depth-anything", "cotracker", "raft")
-)
+OPTIONAL_VARIANTS = ("depth-anything", "cotracker", "raft", "colmap")
+"""Variants that need pretrained weights or an optional dependency."""
+
+DEFAULT_VARIANTS = tuple(name for name in VARIANTS if name not in OPTIONAL_VARIANTS)
 """Variants that need nothing beyond the package itself."""
 
 _WITH_FIGURES = ("full", "oracle-all", "static-only")
@@ -196,6 +202,10 @@ def run_benchmark(
 ) -> dict[str, dict[str, Metrics]]:
     """Run the benchmark and write ``results.json`` and ``results.md`` in ``out``.
 
+    A run that fails does not stop the others: its traceback goes to ``error.txt`` in its
+    folder, the tables are written from the runs that succeeded, and a ``RuntimeError``
+    naming the failed runs is raised at the end.
+
     Returns ``{scene: {variant: metrics}}``.
     """
     from recon4d.data.synthetic import SCENE_NAMES
@@ -206,21 +216,32 @@ def run_benchmark(
     unknown = [v for v in variants if v not in VARIANTS]
     if unknown or profile not in PROFILES:
         raise ValueError(f"unknown variant(s) {unknown} or profile {profile!r}")
+    failures = []
     for scene in scenes:
         for variant in variants:
-            run_one(
-                scene,
-                variant,
-                profile,
-                out / scene / variant,
-                device,
-                lpips,
-                seed,
-                extra_overrides,
-                cache_dir=out / "cache",
-                figures=figures,
-            )
-    return collect_results(out, profile)
+            run_dir = out / scene / variant
+            try:
+                run_one(
+                    scene,
+                    variant,
+                    profile,
+                    run_dir,
+                    device,
+                    lpips,
+                    seed,
+                    extra_overrides,
+                    cache_dir=out / "cache",
+                    figures=figures,
+                )
+            except Exception:
+                logger.exception("run %s/%s failed", scene, variant)
+                run_dir.mkdir(parents=True, exist_ok=True)
+                (run_dir / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
+                failures.append(f"{scene}/{variant}")
+    results = collect_results(out, profile)
+    if failures:
+        raise RuntimeError(f"{len(failures)} run(s) failed: {', '.join(failures)}")
+    return results
 
 
 def collect_results(out: str | Path, profile: str = "") -> dict[str, dict[str, Metrics]]:

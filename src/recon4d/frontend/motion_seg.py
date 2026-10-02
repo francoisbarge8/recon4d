@@ -4,9 +4,9 @@ No semantic model is involved. Once the camera poses and a depth map are known, 
 motion of every *static* pixel is predicted by geometry alone (the "rigid flow"). Pixels
 whose observed optical flow disagrees with that prediction are moving on their own.
 
-Tracks are labelled with the same principle, at track level: a static track is a single
-3D point re-observed over time, so it must have a small reprojection error for the
-estimated cameras; a track that cannot be explained by any static point moves.
+Tracks inherit their label from those masks: a track is dynamic when it spends most of its
+visible life on them. The moving regions, which are small, are then covered with many more
+tracks than a scene-wide grid provides (:func:`dynamic_queries`).
 """
 
 from __future__ import annotations

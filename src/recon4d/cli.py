@@ -73,6 +73,7 @@ def run(
     height: int = 144,
     seed: int = 0,
     lpips: Annotated[str | None, typer.Option(help="LPIPS backbone (alex, vgg, squeeze)")] = None,
+    colmap: Annotated[bool, typer.Option(help="Also export a COLMAP dataset")] = False,
 ) -> None:
     """Reconstruct a synthetic scene and evaluate the result against its ground truth."""
     from recon4d.evaluation import EvalConfig, evaluate_frontend, evaluate_scene
@@ -87,7 +88,7 @@ def run(
     scene_metrics = evaluate_scene(seq, result.frontend, result.scene, EvalConfig(lpips=lpips))
     scene_metrics["temporal"].update(metrics.pop("temporal"))
     metrics.update(scene_metrics)
-    save_run(out, seq, result, metrics)
+    save_run(out, seq, result, metrics, colmap=colmap)
     for group in ("pose", "nvs_test", "nvs_val", "geometry_rendered", "tracking_3d"):
         if group in metrics:
             values = ", ".join(f"{k} {v:.4g}" for k, v in metrics[group].items())
@@ -103,6 +104,7 @@ def video(
     max_frames: int = 60,
     max_side: int = 384,
     fov: Annotated[float | None, typer.Option(help="Horizontal field of view in degrees")] = None,
+    colmap: Annotated[bool, typer.Option(help="Also export a COLMAP dataset")] = False,
 ) -> None:
     """Reconstruct a real video (no ground truth: only qualitative outputs are written)."""
     from recon4d.data.video import load_video
@@ -123,7 +125,7 @@ def video(
     seq = load_video(path, max_frames=max_frames, max_side=max_side, fov_x_deg=fov)
     logger.info("loaded %d frames of %dx%d from %s", seq.num_frames, seq.width, seq.height, path)
     result = run_pipeline(seq, cfg, out)
-    save_run(out, seq, result)
+    save_run(out, seq, result, colmap=colmap)
 
 
 @app.command()
