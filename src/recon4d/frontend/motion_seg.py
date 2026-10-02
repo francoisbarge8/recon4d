@@ -43,9 +43,13 @@ class MotionSegConfig:
         fb_threshold: maximum forward-backward flow error (pixels) of a usable flow vector.
         min_area: connected components smaller than this (pixels) are discarded.
         morph_radius: radius of the morphological closing / opening used to clean masks.
-        track_threshold: mean reprojection error (pixels) above which a track is dynamic.
+        track_threshold: mean reprojection error (pixels) above which a track is dynamic,
+            when no dense mask is available.
         track_mask_fraction: a track is dynamic when it lies inside the dynamic mask for
             more than this fraction of its visible frames.
+        dynamic_track_stride: once the masks are known, the moving regions are covered
+            with additional tracks seeded on a grid of this step (0 disables it).
+        dynamic_track_interval: those extra tracks are seeded every this many frames.
     """
 
     steps: tuple[int, ...] = (2, 4)
@@ -56,6 +60,8 @@ class MotionSegConfig:
     morph_radius: int = 2
     track_threshold: float = 3.0
     track_mask_fraction: float = 0.5
+    dynamic_track_stride: int = 2
+    dynamic_track_interval: int = 2
 
 
 def rigid_flow(depth: Tensor, K: Tensor, w2c_src: Tensor, w2c_dst: Tensor) -> tuple[Tensor, Tensor]:
@@ -134,6 +140,16 @@ def motion_masks(residuals: Tensor, cfg: MotionSegConfig | None = None) -> Tenso
     return torch.from_numpy(np.stack(cleaned))
 
 
+def mask_fraction(tracks: Tracks, masks: Tensor) -> Tensor:
+    """Fraction ``(N,)`` of each track's visible frames spent on the dynamic mask."""
+    n_frames, height, width = masks.shape
+    col = tracks.uv[..., 0].floor().clamp(0, width - 1).to(torch.int64)
+    row = tracks.uv[..., 1].floor().clamp(0, height - 1).to(torch.int64)
+    frame = torch.arange(n_frames)[None, :].expand_as(col)
+    on_mask = masks[frame, row, col] & tracks.visible
+    return on_mask.sum(dim=1) / tracks.visible.sum(dim=1).clamp_min(1)
+
+
 def label_tracks(
     tracks: Tracks,
     reproj_error: Tensor,
@@ -143,19 +159,37 @@ def label_tracks(
 ) -> Tensor:
     """Dynamic / static label ``(N,)`` of every track.
 
-    A track reconstructed as a static point (``static``) is never dynamic. Otherwise it is
-    dynamic when no static 3D point explains it (large ``reproj_error``) and, if dense
-    ``masks`` are available, when it also lies on the dynamic mask most of the time (which
-    separates real motion from plain tracking failures).
+    With dense ``masks``, a track is dynamic when it lies on the dynamic mask for most of
+    its visible life. The reprojection error is deliberately not used then: a short track
+    on a moving object is often explained by *some* static point, and a large error is
+    more often a tracking failure than a moving point.
+
+    Without masks, a track is dynamic when it is not a static inlier and no static 3D
+    point explains it (mean reprojection error above ``track_threshold``).
     """
     cfg = cfg or MotionSegConfig()
-    dynamic = ~static & (reproj_error > cfg.track_threshold)
-    if masks is not None:
-        n_frames, height, width = masks.shape
-        col = tracks.uv[..., 0].floor().clamp(0, width - 1).to(torch.int64)
-        row = tracks.uv[..., 1].floor().clamp(0, height - 1).to(torch.int64)
-        frame = torch.arange(n_frames)[None, :].expand_as(col)
-        on_mask = masks[frame, row, col] & tracks.visible
-        fraction = on_mask.sum(dim=1) / tracks.visible.sum(dim=1).clamp_min(1)
-        dynamic = dynamic & (fraction > cfg.track_mask_fraction)
-    return dynamic
+    if masks is None:
+        return ~static & (reproj_error > cfg.track_threshold)
+    return mask_fraction(tracks, masks) > cfg.track_mask_fraction
+
+
+def dynamic_queries(masks: Tensor, stride: int, interval: int) -> tuple[Tensor, Tensor]:
+    """Query points covering the dynamic masks densely.
+
+    Returns ``frames (N,)`` and ``uv (N, 2)``: the centres of the mask pixels lying on a
+    grid of step ``stride``, for every ``interval``-th frame.
+    """
+    n_frames = masks.shape[0]
+    offset = stride // 2
+    frames, uv = [], []
+    for f in range(0, n_frames, interval):
+        rows, cols = torch.nonzero(masks[f, offset::stride, offset::stride], as_tuple=True)
+        if rows.numel() == 0:
+            continue
+        x = cols * stride + offset + 0.5
+        y = rows * stride + offset + 0.5
+        uv.append(torch.stack([x, y], dim=1).to(torch.float32))
+        frames.append(torch.full((rows.numel(),), f, dtype=torch.int64))
+    if not uv:
+        return torch.zeros(0, dtype=torch.int64), torch.zeros(0, 2)
+    return torch.cat(frames), torch.cat(uv)

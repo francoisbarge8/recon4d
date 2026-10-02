@@ -128,14 +128,19 @@ def video(
 
 @app.command()
 def benchmark(
+    overrides: Overrides = None,
     out: Annotated[Path, typer.Option(help="Output directory")] = Path("results"),
-    profile: Annotated[str, typer.Option(help="cpu (small, minutes) or gpu (full size)")] = "cpu",
+    profile: Annotated[str, typer.Option(help="smoke, cpu (minutes) or gpu (full size)")] = "cpu",
     scenes: Annotated[str, typer.Option(help="Comma-separated scenes")] = ",".join(SCENE_NAMES),
     variants: Annotated[str | None, typer.Option(help="Comma-separated variants")] = None,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
     lpips: Annotated[str | None, typer.Option(help="LPIPS backbone (alex, vgg, squeeze)")] = None,
+    seed: int = 0,
 ) -> None:
-    """Run the benchmark (all scenes x pipeline variants) and write the result tables."""
+    """Run the benchmark (scenes x pipeline variants) and write the result tables.
+
+    Overrides apply to every run, e.g. ``depth=learned depth_checkpoint=tiny_depth.pth``.
+    """
     from recon4d.benchmark import run_benchmark
 
     run_benchmark(
@@ -145,7 +150,21 @@ def benchmark(
         variants=variants.split(",") if variants else None,
         device=device,
         lpips=lpips,
+        seed=seed,
+        extra_overrides=tuple(overrides or ()),
     )
+
+
+@app.command()
+def collect(
+    out: Annotated[Path, typer.Argument(help="Benchmark output directory")],
+    profile: str = "",
+) -> None:
+    """Rebuild ``results.json`` and ``results.md`` from the runs found in a directory."""
+    from recon4d.benchmark import collect_results
+
+    results = collect_results(out, profile)
+    typer.echo(f"{sum(len(v) for v in results.values())} runs collected in {out / 'results.md'}")
 
 
 @app.command()

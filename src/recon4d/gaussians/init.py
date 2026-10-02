@@ -199,7 +199,9 @@ def init_dynamic(
         logger.info("dynamic initialisation: no usable dynamic tracks, the scene is static")
         return None
 
-    bases, logits, canonical, canonical_frame = init_motion_bases(xyz, ok, cfg.num_bases)
+    # A basis needs enough tracks to be estimated at all.
+    num_bases = max(1, min(cfg.num_bases, xyz.shape[0] // 12))
+    bases, logits, canonical, canonical_frame = init_motion_bases(xyz, ok, num_bases)
     logits, canonical = fit_motion_bases(
         bases, logits, canonical, xyz, ok, cfg.basis_fit_iterations, extent
     )

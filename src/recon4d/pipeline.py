@@ -31,7 +31,14 @@ from recon4d.config import save_yaml
 from recon4d.data.sequence import VideoSequence
 from recon4d.frontend.depth import DepthEstimator, DepthNoise, OracleDepth
 from recon4d.frontend.flow import DISFlow, FlowEstimator, OracleFlow, RAFTFlow
-from recon4d.frontend.motion_seg import MotionSegConfig, flow_residuals, label_tracks, motion_masks
+from recon4d.frontend.motion_seg import (
+    MotionSegConfig,
+    dynamic_queries,
+    flow_residuals,
+    label_tracks,
+    mask_fraction,
+    motion_masks,
+)
 from recon4d.frontend.pose import SfMConfig, SfMResult, reconstruct, triangulate_with_poses
 from recon4d.frontend.tracking import KLTConfig, KLTTracker, PointTracker, grid_queries
 from recon4d.frontend.tracking.cotracker import CoTrackerConfig
@@ -263,9 +270,11 @@ def run_frontend(seq: VideoSequence, cfg: PipelineConfig) -> FrontendResult:
     # Dense tracks: triangulated with the poses just estimated, which tells which of them
     # are consistent with a static point.
     tracks, reproj_error, static = pose_tracks, sfm.reproj_error, sfm.valid
+    dense_tracker = None
     if cfg.tracker not in ("none", "", cfg.pose_tracker):
         with timed("dense_tracking", timings, logger):
-            dense = make_tracker(cfg.tracker, cfg, seq, flow).track(images)
+            dense_tracker = make_tracker(cfg.tracker, cfg, seq, flow)
+            dense = dense_tracker.track(images)
             dense_map = triangulate_with_poses(dense, sfm.K, sfm.w2c, cfg.sfm)
         logger.info("tracking: %d dense tracks from %s", len(dense), cfg.tracker)
         tracks = Tracks.concatenate([pose_tracks, dense])
@@ -280,6 +289,17 @@ def run_frontend(seq: VideoSequence, cfg: PipelineConfig) -> FrontendResult:
             dynamic = label_tracks(
                 tracks, reproj_error.to(torch.float32), static, masks, cfg.motion
             )
+            if cfg.motion.dynamic_track_stride > 0 and masks.any():
+                # Moving objects are small: cover them with many more tracks than the
+                # scene-wide grids provide.
+                tracker = dense_tracker or make_tracker(cfg.pose_tracker, cfg, seq, flow)
+                frames, uv = dynamic_queries(
+                    masks, cfg.motion.dynamic_track_stride, cfg.motion.dynamic_track_interval
+                )
+                extra = tracker.track_queries(images, frames, uv)
+                extra = extra.subset(mask_fraction(extra, masks) > cfg.motion.track_mask_fraction)
+                tracks = Tracks.concatenate([tracks, extra])
+                dynamic = torch.cat([dynamic, torch.ones(len(extra), dtype=torch.bool)])
         logger.info(
             "motion segmentation: %.1f%% of the pixels and %d tracks are dynamic",
             100.0 * masks.float().mean(),

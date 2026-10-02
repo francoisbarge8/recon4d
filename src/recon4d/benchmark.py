@@ -120,7 +120,23 @@ VARIANTS: dict[str, tuple[str, tuple[str, ...]]] = {
         "global depth alignment only (no correction field)",
         ("align.grid=null",),
     ),
+    "no-depth-prior-ba": (
+        "bundle adjustment on tracks alone (no monocular depth prior)",
+        ("sfm.depth_weight=0",),
+    ),
+    # Back-end swaps: these need pretrained weights (downloaded on first use).
+    "depth-anything": (
+        "zero-shot Depth Anything V2 (small) instead of the default depth back-end",
+        ("depth=depth-anything",),
+    ),
+    "cotracker": ("CoTracker3 as the dense tracker", ("tracker=cotracker",)),
+    "raft": ("RAFT optical flow instead of DIS", ("flow=raft",)),
 }
+
+DEFAULT_VARIANTS = tuple(
+    name for name in VARIANTS if name not in ("depth-anything", "cotracker", "raft")
+)
+"""Variants that need nothing beyond the package itself."""
 
 _WITH_FIGURES = ("full", "oracle-all", "static-only")
 
@@ -142,7 +158,8 @@ def run_one(
         return load_json(metrics_file)
     spec = PROFILES[profile]
     seq = build_synthetic_sequence(SyntheticConfig(scene=scene, seed=seed, **spec.synth), cache_dir)
-    overrides = [*spec.overrides, *VARIANTS[variant][1], *extra_overrides]
+    # A variant has the last word: it must be able to undo what the extra overrides set.
+    overrides = [*spec.overrides, *extra_overrides, *VARIANTS[variant][1]]
     cfg = apply_overrides(PipelineConfig(device=device, seed=seed), overrides)
     logger.info("=== %s / %s (%s profile) ===", scene, variant, profile)
     result = run_pipeline(seq, cfg, out_dir)
@@ -176,15 +193,13 @@ def run_benchmark(
 
     out = Path(out)
     scenes = list(SCENE_NAMES) if scenes is None else scenes
-    variants = list(VARIANTS) if variants is None else variants
+    variants = list(DEFAULT_VARIANTS) if variants is None else variants
     unknown = [v for v in variants if v not in VARIANTS]
     if unknown or profile not in PROFILES:
         raise ValueError(f"unknown variant(s) {unknown} or profile {profile!r}")
-    results: dict[str, dict[str, Metrics]] = {}
     for scene in scenes:
-        results[scene] = {}
         for variant in variants:
-            results[scene][variant] = run_one(
+            run_one(
                 scene,
                 variant,
                 profile,
@@ -195,9 +210,28 @@ def run_benchmark(
                 extra_overrides,
                 cache_dir=out / "cache",
             )
-            save_json(out / "results.json", results)
-    (out / "results.md").write_text(summarize(results, profile), encoding="utf-8")
-    logger.info("benchmark finished: %s", out / "results.md")
+    return collect_results(out, profile)
+
+
+def collect_results(out: str | Path, profile: str = "") -> dict[str, dict[str, Metrics]]:
+    """Gather every ``<scene>/<variant>/metrics.json`` under ``out`` and write the tables.
+
+    Reading the results back from disk (rather than keeping them in memory) lets several
+    processes, e.g. one per GPU, fill the same output directory.
+    """
+    from recon4d.data.synthetic import SCENE_NAMES
+
+    out = Path(out)
+    results: dict[str, dict[str, Metrics]] = {}
+    for scene in SCENE_NAMES:
+        for variant in VARIANTS:
+            metrics_file = out / scene / variant / "metrics.json"
+            if metrics_file.exists():
+                results.setdefault(scene, {})[variant] = load_json(metrics_file)
+    if results:
+        save_json(out / "results.json", results)
+        (out / "results.md").write_text(summarize(results, profile), encoding="utf-8")
+        logger.info("results collected in %s", out / "results.md")
     return results
 
 
@@ -265,27 +299,24 @@ def _table(rows: dict[str, list[Metrics]], columns: list[tuple[str, str, str, fl
 
 
 def summarize(results: dict[str, dict[str, Metrics]], profile: str = "") -> str:
-    """Markdown report: per-scene results of the full pipeline, then every variant."""
+    """Markdown report: per-scene results of the full pipeline, then every variant.
+
+    A variant is averaged over the scenes it was run on.
+    """
     scenes = list(results)
-    variants = list(next(iter(results.values())))
+    variants = [v for v in VARIANTS if any(v in results[s] for s in scenes)]
     parts = [f"# Benchmark results ({profile} profile)" if profile else "# Benchmark results", ""]
     reference = "full" if "full" in variants else variants[0]
     parts.append(f"## Per scene, `{reference}` pipeline\n")
     for title, columns in _COLUMNS.items():
-        rows = {
-            scene: [results[scene][reference]] for scene in scenes if reference in results[scene]
-        }
+        rows = {s: [results[s][reference]] for s in scenes if reference in results[s]}
         parts += [f"**{title}**\n", _table(rows, columns), ""]
     if len(variants) > 1:
-        dynamic_scenes = [
-            s for s in scenes if "geometry_dynamic" in results[s].get(reference, {}) or s != "still"
-        ]
         parts.append("## Variants, averaged over the scenes\n")
         for title, columns in _COLUMNS.items():
             rows = {v: [results[s][v] for s in scenes if v in results[s]] for v in variants}
             parts += [f"**{title}**\n", _table(rows, columns), ""]
         parts.append("Variants:\n")
-        parts += [f"- `{name}`: {VARIANTS[name][0]}" for name in variants if name in VARIANTS]
+        parts += [f"- `{name}`: {VARIANTS[name][0]}" for name in variants]
         parts.append("")
-        del dynamic_scenes
     return "\n".join(parts)

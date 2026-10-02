@@ -1,14 +1,14 @@
 """Motion bases, their initialisation, and motion segmentation."""
 
-import math
-
 import torch
 
 from recon4d.frontend.flow import OracleFlow
 from recon4d.frontend.motion_seg import (
     MotionSegConfig,
+    dynamic_queries,
     flow_residuals,
     label_tracks,
+    mask_fraction,
     motion_masks,
     rigid_flow,
 )
@@ -179,7 +179,7 @@ def test_small_components_are_removed():
     assert not motion_masks(torch.full((1, 8, 8), float("nan"))).any()
 
 
-def test_track_labels_combine_reprojection_error_and_masks():
+def test_track_labels():
     uv = torch.tensor([[[5.5, 5.5]], [[5.5, 5.5]], [[20.5, 20.5]], [[20.5, 20.5]]]).expand(4, 3, 2)
     tracks = Tracks(uv.clone(), torch.ones(4, 3, dtype=torch.bool))
     masks = torch.zeros(3, 30, 30, dtype=torch.bool)
@@ -187,7 +187,23 @@ def test_track_labels_combine_reprojection_error_and_masks():
     error = torch.tensor([10.0, 0.1, 10.0, 0.1])
     static = torch.tensor([False, True, False, True])
     cfg = MotionSegConfig(track_threshold=3.0)
-    # On the mask and unexplained by a static point: dynamic. Off the mask: a bad track.
-    assert label_tracks(tracks, error, static, masks, cfg).tolist() == [True, False, False, False]
+    assert mask_fraction(tracks, masks).tolist() == [1.0, 1.0, 0.0, 0.0]
+    # With masks, the mask decides; a large error off the mask is a tracking failure.
+    assert label_tracks(tracks, error, static, masks, cfg).tolist() == [True, True, False, False]
+    # Without masks, only tracks that no static point explains are dynamic.
     assert label_tracks(tracks, error, static, None, cfg).tolist() == [True, False, True, False]
-    assert math.isfinite(error.sum().item())
+    # A track spending a third of its life on the mask is static.
+    masks[1:] = False
+    assert not label_tracks(tracks, error, static, masks, cfg).any()
+
+
+def test_dynamic_queries_cover_the_masks():
+    masks = torch.zeros(5, 20, 30, dtype=torch.bool)
+    masks[:, 4:12, 10:22] = True
+    frames, uv = dynamic_queries(masks, stride=2, interval=2)
+    assert set(frames.tolist()) == {0, 2, 4}
+    assert len(frames) == 3 * 4 * 6
+    assert masks[frames, uv[:, 1].long(), uv[:, 0].long()].all()
+    assert torch.equal(uv - uv.floor(), torch.full_like(uv, 0.5)), "queries are pixel centres"
+    empty_frames, empty_uv = dynamic_queries(torch.zeros(3, 8, 8, dtype=torch.bool), 2, 1)
+    assert empty_frames.shape == (0,) and empty_uv.shape == (0, 2)
