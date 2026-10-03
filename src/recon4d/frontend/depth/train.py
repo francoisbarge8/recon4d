@@ -97,13 +97,31 @@ def make_dataset(
         with np.load(cache) as data:
             return torch.from_numpy(data["images"]), torch.from_numpy(data["depth"])
     jobs = [(s, cfg.frames_per_scene, cfg.width, cfg.height, cfg.fov_x_deg, cfg.spp) for s in seeds]
+    start = time.perf_counter()
+
+    def progress(done: int) -> None:
+        if done % max(1, len(jobs) // 10) == 0 or done == len(jobs):
+            elapsed = time.perf_counter() - start
+            logger.info(
+                "rendering the depth dataset: %d/%d scenes, %.0fs elapsed, about %.0fs left",
+                done,
+                len(jobs),
+                elapsed,
+                elapsed / done * (len(jobs) - done),
+            )
+
+    results = []
     if workers > 1:
         import multiprocessing as mp
 
         with mp.get_context("spawn").Pool(workers) as pool:
-            results = pool.map(_render_job, jobs, chunksize=4)
+            for result in pool.imap(_render_job, jobs, chunksize=2):
+                results.append(result)
+                progress(len(results))
     else:
-        results = [render_scene_samples(*job) for job in jobs]
+        for job in jobs:
+            results.append(render_scene_samples(*job))
+            progress(len(results))
     images = np.concatenate([r[0] for r in results])
     depth = np.concatenate([r[1] for r in results])
     if cache is not None:
