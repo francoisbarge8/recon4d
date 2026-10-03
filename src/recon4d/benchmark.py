@@ -49,6 +49,9 @@ PROFILES: dict[str, Profile] = {
             "train.log_every=20",
             "init.n_static=800",
             "init.n_dynamic=200",
+            # 8 frames of 64 x 48: few tracks of the small moving objects last 4 frames, and
+            # how many do depends on the OpenCV version; 2 frames keeps the dynamic path tested.
+            "init.min_track_frames=2",
             "init.keyframes=3",
             "init.stride=1",
             "init.basis_fit_iterations=50",

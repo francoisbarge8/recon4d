@@ -336,8 +336,8 @@ class SceneTrainer:
             self.motion_optimizer.zero_grad(set_to_none=True)
 
         self._update_structure()
-        record = {name: float(value) for name, value in terms.items()}
-        record["loss"] = float(loss)
+        record = {name: float(value.detach()) for name, value in terms.items()}
+        record["loss"] = float(loss.detach())
         return record
 
     def _update_structure(self) -> None:
