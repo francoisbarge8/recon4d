@@ -201,3 +201,21 @@ def test_grid_queries():
     assert torch.equal(grid[0], torch.tensor([4.5, 4.5]))
     inner = grid_queries(48, 64, 8, margin=6)
     assert len(inner) < len(grid) and inner.min() >= 6
+
+
+def test_cotracker_loads_from_github_or_from_a_local_clone(tmp_path, monkeypatch):
+    from recon4d.frontend.tracking.cotracker import CoTracker, CoTrackerConfig
+
+    calls = []
+
+    def fake_load(repo, model, source):
+        calls.append((repo, model, source))
+        return torch.nn.Identity()
+
+    monkeypatch.setattr(torch.hub, "load", fake_load)
+    CoTracker()
+    CoTracker(CoTrackerConfig(repo=str(tmp_path)))
+    assert calls == [
+        ("facebookresearch/co-tracker", "cotracker3_offline", "github"),
+        (str(tmp_path), "cotracker3_offline", "local"),
+    ]

@@ -8,6 +8,7 @@ first use; a GPU is strongly recommended.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 from torch import Tensor
@@ -22,6 +23,8 @@ class CoTrackerConfig:
 
     Attributes:
         model: ``torch.hub`` entry point (``cotracker3_offline`` sees the whole video).
+        repo: ``torch.hub`` repository, or a local clone of it (no GitHub access needed;
+            the weights still come from Hugging Face).
         grid_stride: spacing (pixels) of the query grid seeded on each keyframe.
         keyframe_interval: a query grid is seeded every this many frames.
         visibility_threshold: predicted visibility above which a point counts as visible.
@@ -29,6 +32,7 @@ class CoTrackerConfig:
     """
 
     model: str = "cotracker3_offline"
+    repo: str = "facebookresearch/co-tracker"
     grid_stride: int = 4
     keyframe_interval: int = 8
     visibility_threshold: float = 0.5
@@ -41,7 +45,9 @@ class CoTracker(PointTracker):
     def __init__(self, cfg: CoTrackerConfig | None = None, device: str = "cpu") -> None:
         self.cfg = cfg or CoTrackerConfig()
         self.device = device
-        self.model = torch.hub.load("facebookresearch/co-tracker", self.cfg.model).to(device).eval()
+        source = "local" if Path(self.cfg.repo).is_dir() else "github"
+        model = torch.hub.load(self.cfg.repo, self.cfg.model, source=source)
+        self.model = model.to(device).eval()
 
     @torch.no_grad()
     def track_queries(self, images: Tensor, query_frames: Tensor, query_uv: Tensor) -> Tracks:
