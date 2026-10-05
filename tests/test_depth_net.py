@@ -96,9 +96,29 @@ def test_training_reduces_the_validation_error(tmp_path):
     # Even this toy run learns the layout prior of the scenes (far walls, near floor).
     assert best["abs_rel"] < 0.35 and best["delta1"] > 0.4
     estimator = LearnedDepth(tmp_path / "net.pth")
+    assert estimator.image_size == (36, 48)
     prediction = estimator.predict(images[:2].float() / 255.0)
     assert prediction.shape == (2, 36, 48) and (prediction > 0).all()
     assert estimator.kind == "scale"
+
+
+def test_learned_depth_runs_at_the_training_size(tmp_path):
+    model = TinyDepthNet(SMALL).eval()
+    save_checkpoint(tmp_path / "net.pth", model, {"image_size": [24, 32]})
+    estimator = LearnedDepth(tmp_path / "net.pth")
+    seen = []
+    estimator.model.register_forward_hook(lambda module, inputs, output: seen.append(inputs[0]))
+    frames = torch.rand(3, 48, 64, 3)
+    prediction = estimator.predict(frames)
+    assert seen[0].shape == (3, 3, 24, 32), "the network sees frames at its training size"
+    assert prediction.shape == (3, 48, 64) and (prediction > 0).all()
+    # At the training size, nothing is resized.
+    small = torch.rand(2, 24, 32, 3)
+    expected = torch.exp(model(small.permute(0, 3, 1, 2)))
+    assert torch.allclose(estimator.predict(small), expected, rtol=2e-2)
+    # Checkpoints without the size run at the size of the frames.
+    save_checkpoint(tmp_path / "old.pth", model)
+    assert LearnedDepth(tmp_path / "old.pth").predict(frames).shape == (3, 48, 64)
 
 
 def test_oracle_depth_noise_model(tiny_rolling):

@@ -229,5 +229,10 @@ def train_depth_network(
         )
         if metrics["abs_rel"] < best["abs_rel"]:
             best = {**metrics, "epoch": epoch + 1}
-            save_checkpoint(out, model, {"val": best, "train_images": len(train_images)})
+            meta = {
+                "val": best,
+                "train_images": len(train_images),
+                "image_size": [cfg.height, cfg.width],
+            }
+            save_checkpoint(out, model, meta)
     return best

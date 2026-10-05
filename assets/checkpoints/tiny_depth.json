@@ -1,0 +1,27 @@
+{
+  "config": {
+    "batch_size": 16,
+    "cache": "depth_cache",
+    "device": "cpu",
+    "epochs": 12,
+    "frames": 6,
+    "height": 144,
+    "lr": 0.002,
+    "out": "assets/checkpoints/tiny_depth.pth",
+    "scenes": 400,
+    "seed": 0,
+    "val_scenes": 40,
+    "width": 192,
+    "workers": 4
+  },
+  "validation": {
+    "abs_rel": 0.018251631524131822,
+    "delta1": 0.9977608386381173,
+    "delta2": 0.9998280466338735,
+    "delta3": 0.9999920126832562,
+    "epoch": 12,
+    "rmse": 0.12420371383894159,
+    "rmse_log": 0.031422916447150874,
+    "sq_rel": 0.003720315831670036
+  }
+}
