@@ -149,6 +149,16 @@ def test_benchmark_variant_runs_end_to_end(tmp_path, variant):
     assert run_one("rolling", variant, "smoke", tmp_path / variant) == metrics
 
 
+def test_motion_metrics_of_a_static_scene_are_undefined_not_zero(tmp_path):
+    metrics = run_one("still", "full", "smoke", tmp_path / "full", figures=False)
+    # Without moving objects a single false positive would make the IoU 0, and a fixed
+    # validation camera sees no change at all: neither is averaged into the tables.
+    assert set(metrics["motion_mask"]) == {"false_positive_rate"}
+    assert 0.0 <= metrics["motion_mask"]["false_positive_rate"] < 0.1
+    assert "difference_psnr_val" not in metrics["temporal"]
+    assert "warping_error" in metrics["temporal"]
+
+
 def test_results_are_collected_and_summarised(tmp_path):
     fake = {
         "nvs_test": {"psnr": 20.0, "ssim": 0.5},

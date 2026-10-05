@@ -321,6 +321,7 @@ _COLUMNS: dict[str, list[tuple[str, str, str, float, str]]] = {
         ("Chamfer moving (cm)", "geometry_dynamic", "chamfer", 100.0, ".1f"),
         ("3D EPE (cm)", "tracking_3d", "epe_3d", 100.0, ".1f"),
         ("Mask IoU", "motion_mask", "iou", 1.0, ".3f"),
+        ("Mask FPR", "motion_mask", "false_positive_rate", 1.0, ".3f"),
         ("Track d_avg", "tracking", "delta_avg", 1.0, ".3f"),
     ],
     "Temporal consistency": [
