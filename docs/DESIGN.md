@@ -111,7 +111,10 @@ the reconstruction to the network's while leaving each frame free to choose its 
 > the reconstruction towards it instead. Measured on `sliding` (128 x 96, noisy depth):
 > with exact tracks the structure, exact without the prior, came out 3.7% off; with KLT
 > tracks the trajectory error went from 0.4 cm to 1.0 cm and the aligned depth error from
-> 1.9% to 4.1%. The `depth-prior-ba` variant of the benchmark switches it back on.
+> 1.9% to 4.1%. The `depth-prior-ba` variant of the benchmark switches it back on. Over
+> the whole `cpu` benchmark (4 scenes, 3 seeds) it leaves the trajectory error about
+> unchanged on average (0.63 against 0.59 cm) but makes the geometry unpredictable:
+> Chamfer distance 10.1 ± 5.3 cm against 8.0 ± 0.6 cm without it.
 
 ### Depth alignment
 
@@ -244,7 +247,9 @@ See [BENCHMARK.md](BENCHMARK.md). Two principles:
 * **Motion segmentation** relies on parallax: an object moving along the epipolar lines of
   the camera motion, or a nearly static camera, defeats the rigid-flow test.
 * **Flow chaining** cannot recover a point after an occlusion; the motion bases bridge the
-  gaps, a long-range tracker (`cotracker`) does better.
+  gaps, a long-range tracker (`cotracker`) does better. On the `cpu` benchmark the dense
+  tracks are the largest source of error: replacing the tracks and the optical flow by
+  the ground truth brings the 3D trajectory error from 32 cm to 7 cm.
 * **No photometric pose refinement.** Poses are fixed after bundle adjustment, although
   the rasterizer is differentiable with respect to them.
 * **Synthetic benchmark.** The ground truth is exact and the image formation is

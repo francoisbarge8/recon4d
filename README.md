@@ -84,43 +84,89 @@ explains every stage and the reasons behind the design.
 
 ## Results
 
-Status: the complete benchmark (4 scenes x all variants, at full size) is produced by the
-Kaggle notebook and has not been run yet. The numbers below are the runs made so far on a
-laptop CPU, on one scene (`sliding`: a spinning crate and a bouncing ball), with the `cpu`
-profile (24 frames at 128 x 96, 800 optimisation steps), seed 0. Nothing here is averaged
-over scenes or seeds.
+The complete benchmark at the `cpu` profile: 4 scenes x 12 variants x 3 seeds, that is 144
+reconstructions of 24 frames at 128 x 96 with 800 optimisation steps, run on a 4-core CPU
+without a GPU (53 minutes, one process per scene). A seed changes the layout, the textures
+and the camera shake of every scene; each number is the **mean ± standard deviation over
+the 3 seeds**. Depth comes from the noisy oracle (the default of this profile, see
+[docs/BENCHMARK.md](docs/BENCHMARK.md)). Every metric of every variant:
+[results/cpu/results.md](results/cpu/results.md); the metrics of each run:
+`results/cpu/seed*/results.json`.
 
-**Upper bound of the scene optimisation** (`oracle-all`: ground-truth depth, tracks and
-poses, so only the 4D Gaussian optimisation is measured):
+![input frame, reconstruction and rendered depth](results/cpu/figures/sliding_full.png)
 
-| | PSNR | SSIM |
-|---|---:|---:|
-| held-out frames | 26.47 dB | 0.904 |
-| held-out frames, moving objects only | 24.26 dB | 0.860 |
-| held-out cameras (co-visible pixels) | 24.96 dB | 0.848 |
-| held-out cameras, moving objects only | 22.85 dB | 0.814 |
+*`sliding`, default pipeline, seed 0: input frame, reconstruction, rendered depth
+([video](results/cpu/figures/sliding_full_reconstruction.gif),
+[orbiting camera, time frozen](results/cpu/figures/sliding_full_bullet_time.gif)).*
 
-| geometry and motion | |
-|---|---:|
-| Chamfer distance, static surface | 3.5 cm |
-| F-score @ 10 cm, static surface | 0.974 |
-| Chamfer distance, moving objects | 2.4 cm |
-| 3D trajectory error (EPE) | 2.0 cm |
-| rendered depth, AbsRel | 1.0% |
+**Default pipeline** (KLT + flow chaining with DIS, SfM + bundle adjustment, depth
+alignment, motion segmentation, 4D Gaussians), per scene:
 
-**Front-end of the default pipeline** (KLT + DIS flow, noisy oracle depth, everything else
-estimated), same scene:
+| | ATE (cm) | aligned depth AbsRel (%) | PSNR held-out frames | PSNR held-out cameras | PSNR moving objects | Chamfer (cm) | 3D EPE (cm) | mask IoU |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| still | 0.52 ± 0.04 | 2.6 ± 1.4 | 26.66 ± 0.73 | 23.39 ± 1.05 | - | 7.6 ± 3.6 | - | - |
+| rolling | 0.47 ± 0.04 | 2.4 ± 0.9 | 25.04 ± 0.36 | 22.38 ± 0.76 | 17.53 ± 1.12 | 6.6 ± 2.3 | 35.9 ± 14.7 | 0.726 ± 0.019 |
+| sliding | 0.60 ± 0.11 | 3.3 ± 1.5 | 25.16 ± 0.45 | 21.74 ± 1.57 | 17.92 ± 0.25 | 8.7 ± 3.3 | 41.4 ± 14.4 | 0.769 ± 0.013 |
+| squash | 0.78 ± 0.21 | 2.8 ± 0.8 | 26.10 ± 0.27 | 22.18 ± 0.87 | 17.87 ± 0.76 | 9.1 ± 1.4 | 17.4 ± 5.6 | 0.725 ± 0.010 |
 
-| | |
-|---|---:|
-| camera trajectory error (ATE) | 0.38 cm |
-| relative rotation error (RPE) | 0.07 deg |
-| depth, best per-frame scale (no alignment to the poses) | 3.8% AbsRel |
-| depth after alignment | 1.9% AbsRel |
+PSNR on held-out cameras is computed on the pixels the video observes; "moving objects"
+restricts it to them. 3D EPE: true surface points handed to the scene's motion field and
+compared with their true trajectory over the whole video.
 
-The end-to-end numbers of the default pipeline are not reported yet: the only complete run
-predates a fix to the pose estimation (see "Why it is off" in
-[docs/DESIGN.md](docs/DESIGN.md)) and is no longer representative.
+**Where the error comes from.** One stage at a time is replaced by its ground truth,
+averaged over the four scenes:
+
+| | PSNR held-out cameras | PSNR moving objects | Chamfer (cm) | Chamfer moving (cm) | 3D EPE (cm) | track δ_avg |
+|---|---:|---:|---:|---:|---:|---:|
+| `full` | 22.42 ± 0.22 | 17.77 ± 0.62 | 8.0 ± 0.6 | 12.6 ± 2.4 | 31.6 ± 7.6 | 0.429 ± 0.016 |
+| `oracle-depth` | 22.53 ± 0.18 | 17.92 ± 0.72 | 7.8 ± 0.9 | 12.1 ± 1.7 | 28.5 ± 1.6 | 0.430 ± 0.016 |
+| `oracle-poses` | 23.75 ± 0.14 | 18.15 ± 0.62 | 5.2 ± 0.1 | 10.4 ± 1.7 | 28.0 ± 7.3 | 0.430 ± 0.016 |
+| `oracle-tracks` | 24.16 ± 0.12 | 19.32 ± 0.41 | 4.4 ± 0.0 | 4.0 ± 0.3 | 6.7 ± 1.0 | 1.000 ± 0.000 |
+| `oracle-all` | 24.57 ± 0.11 | 21.03 ± 0.15 | 3.4 ± 0.0 | 2.8 ± 0.3 | 2.7 ± 0.8 | 1.000 ± 0.000 |
+| `static-only` | 20.26 ± 0.28 | 11.24 ± 0.55 | 8.3 ± 0.7 | - | 74.2 ± 0.2 | 0.483 ± 0.009 |
+
+* **Point tracking is the bottleneck.** Exact tracks and flow (which also make the SfM
+  poses exact) bring the 3D trajectory error from 32 cm to 7 cm and the moving surfaces
+  from 12.6 cm to 4.0 cm. The dense tracker chains optical flow and drops points at
+  occlusions (TAP-Vid δ_avg 0.43).
+* Exact poses mostly help the static geometry (Chamfer 8.0 to 5.2 cm, +1.3 dB on the
+  held-out cameras), although the estimated trajectory is already within 0.6 cm.
+* Exact depth changes little (+0.1 dB): once aligned to the poses, the noisy depth is
+  already within 2.8% of the truth.
+* With every input exact, the moving objects (21.0 dB) remain 3.5 dB below the whole image:
+  that gap belongs to the scene optimisation at this budget.
+* Ignoring the motion (`static-only`, plain 3DGS) costs 2.2 dB on the held-out cameras and
+  6.5 dB on the moving objects.
+
+**Ablations and pose back-ends**, averaged over the four scenes:
+
+| | ATE (cm) | RPE-r (deg) | aligned depth AbsRel (%) | PSNR held-out cameras | PSNR moving objects | Chamfer (cm) | 3D EPE (cm) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `full` | 0.59 ± 0.07 | 0.077 ± 0.003 | 2.8 ± 0.5 | 22.42 ± 0.22 | 17.77 ± 0.62 | 8.0 ± 0.6 | 31.6 ± 7.6 |
+| `no-depth-loss` | 0.59 ± 0.07 | 0.077 ± 0.003 | 2.8 ± 0.5 | 22.37 ± 0.24 | 17.56 ± 0.74 | 8.1 ± 0.4 | 32.1 ± 7.1 |
+| `no-track-loss` | 0.59 ± 0.07 | 0.077 ± 0.003 | 2.8 ± 0.5 | 22.21 ± 0.12 | 16.33 ± 0.41 | 7.6 ± 0.5 | 31.3 ± 6.0 |
+| `no-rigidity` | 0.59 ± 0.07 | 0.077 ± 0.003 | 2.8 ± 0.5 | 22.40 ± 0.22 | 17.94 ± 0.61 | 8.0 ± 0.6 | 34.0 ± 5.5 |
+| `no-depth-correction` | 0.59 ± 0.07 | 0.077 ± 0.003 | 4.1 ± 0.5 | 22.01 ± 0.20 | 16.89 ± 0.67 | 7.7 ± 0.3 | 35.8 ± 10.6 |
+| `depth-prior-ba` | 0.63 ± 0.18 | 0.075 ± 0.021 | 2.6 ± 1.4 | 22.42 ± 1.55 | 17.47 ± 0.95 | 10.1 ± 5.3 | 34.8 ± 5.6 |
+| `colmap` | 2.05 ± 0.90 | 0.215 ± 0.030 | 4.4 ± 2.8 | 21.33 ± 1.63 | 16.62 ± 1.36 | 14.7 ± 8.4 | 33.6 ± 8.6 |
+
+* The track loss is what animates the moving objects: without it they lose 1.4 dB.
+* The depth correction field brings the aligned depth from 4.1% to 2.8% AbsRel (+0.4 dB on
+  the held-out cameras).
+* The depth loss and the rigidity regulariser make no difference larger than the spread
+  over the seeds at this budget.
+* The monocular depth prior in bundle adjustment does not help on average and makes the
+  geometry unpredictable (Chamfer 10.1 ± 5.3 cm against 8.0 ± 0.6 cm), which is why it is
+  off by default.
+* COLMAP is close to the track-based SfM on the static scene (ATE 0.75 against 0.52 cm);
+  the gap grows with the moving objects, which COLMAP is not told about (4.4 against
+  0.8 cm on `squash`).
+
+**Not run yet.** The full-size `gpu` profile (60 frames at 384 x 288, 7000 steps) needs a
+GPU: it is what [the Kaggle notebook](notebooks/kaggle_benchmark.ipynb) runs. The container
+used for the CPU runs could not download pretrained weights (Hugging Face and
+download.pytorch.org were out of reach), so LPIPS and the `depth-anything`, `cotracker` and
+`raft` variants are missing too, as is the cross-check against gsplat (CUDA only).
 
 ## Installation
 

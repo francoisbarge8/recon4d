@@ -83,14 +83,15 @@ the ground-truth frame; it is estimated **from the camera poses only**
 | depth | AbsRel, RMSE, delta<1.25 | standard; reported for the raw prediction with the best per-frame alignment (a ceiling), for the aligned depth and for the depth rendered from the scene |
 | tracking | delta_avg, AJ, OA | TAP-Vid, at 256 x 256 |
 | | EPE (tracked) | error of the points the tracker itself reports as visible |
-| motion | mask IoU | dynamic mask against the true one |
+| motion | mask IoU | dynamic mask against the true one (scenes with moving objects) |
+| | mask FPR | fraction of the static pixels labelled as moving |
 | view synthesis | PSNR, SSIM, LPIPS | held-out frames; validation cameras (co-visible pixels); moving objects only |
 | geometry | accuracy, completeness, Chamfer | mean nearest-neighbour distances, both ways and their average |
 | | F-score @ 5 cm / 10 cm | harmonic mean of precision and recall |
 | 3D tracking | EPE, delta@5cm, delta@10cm | true surface points handed to the scene's motion field at the frame they are first seen and compared with their true trajectory over the whole video |
 | temporal | depth temporal error | 3D inconsistency between consecutive depth maps along true correspondences, relative to depth |
 | | warping error | squared difference between each frame and its flow-warped successor |
-| | temporal-difference PSNR | fidelity of the frame-to-frame *changes* on the validation cameras |
+| | temporal-difference PSNR | fidelity of the frame-to-frame *changes* on the validation cameras (undefined when the reference video does not change) |
 
 Three geometries are scored: the point cloud fused from the aligned depth maps
 (`geometry_fused`), the surface rendered by the optimised scene (`geometry_rendered`), and
@@ -133,6 +134,23 @@ python scripts/run_benchmark_multi_gpu.py --out results/gpu --profile gpu --lpip
 
 Runs are resumable, and `recon4d collect <dir>` rebuilds the tables from the runs found on
 disk.
+
+A metric that is undefined for a run (the moving-object metrics of `still`, for instance)
+is left out of the averages rather than counted as zero.
+
+### Several seeds
+
+A seed changes the layout, the textures and the camera shake of every scene, so a
+benchmark run with several seeds gives the spread of each number. Without a GPU, the
+runner deals the scenes out to CPU processes:
+
+```bash
+for seed in 0 1 2; do
+  python scripts/run_benchmark_multi_gpu.py --out results/cpu/seed$seed --profile cpu \
+      --gpus 0 --workers 4 --seed $seed
+done
+recon4d collect results/cpu --seeds --profile cpu  # mean ± std over the seeds
+```
 
 ## The depth back-ends of the benchmark
 
