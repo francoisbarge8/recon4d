@@ -114,7 +114,10 @@ the reconstruction to the network's while leaving each frame free to choose its 
 > 1.9% to 4.1%. The `depth-prior-ba` variant of the benchmark switches it back on. Over
 > the whole `cpu` benchmark (4 scenes, 3 seeds) it leaves the trajectory error about
 > unchanged on average (0.63 against 0.59 cm) but makes the geometry unpredictable:
-> Chamfer distance 10.1 ± 5.3 cm against 8.0 ± 0.6 cm without it.
+> Chamfer distance 10.1 ± 5.3 cm against 8.0 ± 0.6 cm without it. With the in-domain
+> network as depth back-end instead of the noise model, the same benchmark says the
+> opposite: the prior brings the Chamfer distance from 8.1 ± 0.6 cm to 6.3 ± 0.3 cm and the
+> aligned depth error from 2.8% to 2.1%. The right setting depends on the depth back-end.
 
 ### Depth alignment
 

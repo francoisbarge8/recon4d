@@ -1,5 +1,7 @@
 # Benchmark results (cpu profile, seeds 0, 1, 2)
 
+Depth back-end: `oracle-noisy` (default of the profile).
+
 A seed changes the layout, the textures and the camera shake of every scene. A cell is the mean ± standard deviation over the seeds; for the variants, of the average over the scenes of each seed.
 
 ## Per scene, `full` pipeline

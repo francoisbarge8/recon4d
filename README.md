@@ -91,7 +91,8 @@ and the camera shake of every scene; each number is the **mean ± standard devia
 the 3 seeds**. Depth comes from the noisy oracle (the default of this profile, see
 [docs/BENCHMARK.md](docs/BENCHMARK.md)). Every metric of every variant:
 [results/cpu/results.md](results/cpu/results.md); the metrics of each run:
-`results/cpu/seed*/results.json`.
+`results/cpu/seed*/results.json`; the commands:
+[docs/BENCHMARK.md](docs/BENCHMARK.md#several-seeds).
 
 ![input frame, reconstruction and rendered depth](results/cpu/figures/sliding_full.png)
 
@@ -161,6 +162,31 @@ averaged over the four scenes:
 * COLMAP is close to the track-based SfM on the static scene (ATE 0.75 against 0.52 cm);
   the gap grows with the moving objects, which COLMAP is not told about (4.4 against
   0.8 cm on `squash`).
+
+**Depth predicted from pixels.** The same benchmark with the in-domain U-Net as depth
+back-end (`depth=learned`, the setting of the Kaggle notebook), trained here on CPU for 12
+epochs instead of 40 (2400 frames of random scenes, 1.8% AbsRel on its validation scenes).
+Every table: [results/cpu-learned/results.md](results/cpu-learned/results.md).
+
+| depth back-end | raw depth AbsRel (%) | aligned depth AbsRel (%) | PSNR held-out cameras | PSNR moving objects | Chamfer (cm) | 3D EPE (cm) |
+|---|---:|---:|---:|---:|---:|---:|
+| noisy oracle (default of the profile) | 3.5 ± 0.3 | 2.8 ± 0.5 | 22.42 ± 0.22 | 17.77 ± 0.62 | 8.0 ± 0.6 | 31.6 ± 7.6 |
+| in-domain U-Net | 2.1 ± 0.2 | 2.8 ± 0.4 | 22.07 ± 0.16 | 16.55 ± 0.16 | 8.1 ± 0.6 | 40.5 ± 7.8 |
+| in-domain U-Net, depth prior in BA | 2.1 ± 0.2 | 2.1 ± 0.2 | 22.57 ± 0.26 | 16.73 ± 0.17 | 6.3 ± 0.3 | 36.8 ± 4.8 |
+
+* The network beats the noise model on the static scene (2.0% against 3.5% AbsRel on the
+  static pixels of the three dynamic scenes, and far more consistent from frame to frame)
+  but not on the moving objects (5.1% against 3.7%), which is where it loses end to end: 1.2 dB on the moving
+  objects, 41 cm of 3D trajectory error against 32.
+* With this network, the depth prior in bundle adjustment **helps**: Chamfer 8.1 to
+  6.3 cm, +0.5 dB on the held-out cameras, aligned depth 2.8% to 2.1%, with a small
+  spread. With the noise model it made the geometry unpredictable (above). It stays off by
+  default, the default depth of the profile being the noise model; with a network, turn it
+  on with `sfm.depth_weight=10`.
+* The network has to run at the size it was trained at (192 x 144): applied to the
+  128 x 96 frames directly, its error on a benchmark scene went from 1.5% to 4.3% (and to
+  5.5% on the 384 x 288 frames of the `gpu` profile). The `learned` back-end now resizes
+  the frames.
 
 **Not run yet.** The full-size `gpu` profile (60 frames at 384 x 288, 7000 steps) needs a
 GPU: it is what [the Kaggle notebook](notebooks/kaggle_benchmark.ipynb) runs. The container

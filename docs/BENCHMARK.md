@@ -160,5 +160,8 @@ recon4d collect results/cpu --seeds --profile cpu  # mean ± std over the seeds
   the depth prior a dial rather than an accident of a particular network.
 * `learned`: a compact U-Net trained on random scenes from the same scene grammar, never
   on the benchmark scenes (`scripts/train_depth.py`). It predicts depth from pixels, up
-  to scale, one frame at a time.
+  to scale, one frame at a time, at the image size it was trained at (192 x 144): frames
+  of another size are resized, otherwise its error triples. The checkpoint in
+  `assets/checkpoints` was trained on CPU for 12 epochs (1.8% AbsRel on its validation
+  scenes).
 * `depth-anything`: Depth Anything V2, zero-shot.
