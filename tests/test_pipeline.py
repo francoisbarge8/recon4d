@@ -7,7 +7,15 @@ import torch
 from typer.testing import CliRunner
 
 from conftest import tiny_config
-from recon4d.benchmark import PROFILES, VARIANTS, collect_results, run_one, summarize
+from recon4d.benchmark import (
+    PROFILES,
+    VARIANTS,
+    collect_results,
+    collect_seeds,
+    run_one,
+    summarize,
+    summarize_seeds,
+)
 from recon4d.cli import app
 from recon4d.config import apply_overrides
 from recon4d.data.synthetic import build_synthetic_sequence
@@ -163,6 +171,28 @@ def test_results_are_collected_and_summarised(tmp_path):
     assert collect_results(tmp_path / "nothing") == {}
 
 
+def test_seeds_are_collected_with_their_spread(tmp_path):
+    from recon4d.utils import save_json
+
+    for seed, psnr in ((0, 20.0), (1, 30.0)):
+        for scene, offset in (("rolling", 0.0), ("still", 2.0)):
+            metrics = {"nvs_test": {"psnr": psnr + offset}}
+            save_json(tmp_path / f"seed{seed}" / scene / "full" / "metrics.json", metrics)
+        save_json(tmp_path / f"seed{seed}" / "still" / "oracle-all" / "metrics.json", metrics)
+    (tmp_path / "seed_notes").mkdir()  # not a seed directory
+    runs = collect_seeds(tmp_path, "smoke")
+    assert list(runs) == [0, 1] and (tmp_path / "seed1" / "results.md").exists()
+    report = (tmp_path / "results.md").read_text(encoding="utf-8")
+    assert report == summarize_seeds(runs, "smoke") and "seeds 0, 1" in report
+    # Per scene: spread over the seeds; per variant: spread of the averages over the scenes.
+    assert "| still | 27.00 ± 7.07 |" in report
+    assert "| full | 26.00 ± 7.07 |" in report
+    assert "| oracle-all | 27.00 ± 7.07 |" in report
+    # With one seed, the tables are those of the plain report.
+    tables = summarize(runs[0], "smoke").split("\n", 2)[2]
+    assert summarize_seeds({0: runs[0]}, "smoke").endswith(tables) and "±" not in tables
+
+
 def test_a_failing_run_does_not_stop_the_benchmark(tmp_path, monkeypatch):
     from recon4d import benchmark
     from recon4d.utils import save_json
@@ -218,4 +248,6 @@ def test_command_line_interface(tmp_path):
     ).exists()
     result = runner.invoke(app, ["collect", str(tmp_path / "empty")])
     assert result.exit_code == 0 and "0 runs" in result.output
+    result = runner.invoke(app, ["collect", str(tmp_path / "empty"), "--seeds"])
+    assert result.exit_code == 0 and "0 runs over 0 seed(s)" in result.output
     assert runner.invoke(app, ["run", "nope"]).exit_code != 0

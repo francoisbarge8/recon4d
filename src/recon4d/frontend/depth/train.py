@@ -218,7 +218,7 @@ def train_depth_network(
             loss.backward()
             optimizer.step()
             scheduler.step()
-            running += float(loss)
+            running += float(loss.detach())
         metrics = evaluate(model, val_images, val_depth, device)
         logger.info(
             "epoch %3d | loss %.4f | val abs_rel %.4f delta1 %.3f",

@@ -12,6 +12,7 @@ Runs are resumable: a (scene, variant) pair whose ``metrics.json`` exists is not
 from __future__ import annotations
 
 import math
+import statistics
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
@@ -269,6 +270,29 @@ def collect_results(out: str | Path, profile: str = "") -> dict[str, dict[str, M
     return results
 
 
+def collect_seeds(out: str | Path, profile: str = "") -> dict[int, dict[str, dict[str, Metrics]]]:
+    """Collect one benchmark per ``seed<k>`` directory under ``out`` and write the tables.
+
+    Each seed directory gets its own tables (:func:`collect_results`); ``out/results.md``
+    reports the mean and standard deviation over the seeds.
+
+    Returns ``{seed: {scene: {variant: metrics}}}``.
+    """
+    out = Path(out)
+    runs: dict[int, dict[str, dict[str, Metrics]]] = {}
+    for seed_dir in out.glob("seed*"):
+        suffix = seed_dir.name.removeprefix("seed")
+        if not (seed_dir.is_dir() and suffix.isdigit()):
+            continue
+        if results := collect_results(seed_dir, profile):
+            runs[int(suffix)] = results
+    runs = dict(sorted(runs.items()))
+    if runs:
+        (out / "results.md").write_text(summarize_seeds(runs, profile), encoding="utf-8")
+        logger.info("results of seeds %s collected in %s", list(runs), out / "results.md")
+    return runs
+
+
 # ------------------------------------------------------------------------------ tables
 
 # (column title, metric group, metric name, multiplier, number format)
@@ -315,19 +339,32 @@ def _value(metrics: Metrics, group: str, name: str) -> float | None:
     return None if value is None or (isinstance(value, float) and math.isnan(value)) else value
 
 
-def _table(rows: dict[str, list[Metrics]], columns: list[tuple[str, str, str, float, str]]) -> str:
-    """Markdown table with one row per key of ``rows``; cells average the listed metrics."""
+def _cell(groups: list[list[Metrics]], group: str, name: str, multiplier: float, fmt: str) -> str:
+    """Average of a metric over each group of runs; with several groups (seeds), the mean and
+    the standard deviation of these averages."""
+    means = []
+    for runs in groups:
+        values = [v for m in runs if (v := _value(m, group, name)) is not None]
+        if values:
+            means.append(multiplier * sum(values) / len(values))
+    if not means:
+        return "-"
+    mean = format(sum(means) / len(means), fmt)
+    return f"{mean} ± {format(statistics.stdev(means), fmt)}" if len(means) > 1 else mean
+
+
+def _table(
+    rows: dict[str, list[list[Metrics]]], columns: list[tuple[str, str, str, float, str]]
+) -> str:
+    """Markdown table with one row per key of ``rows``; see :func:`_cell` for the cells."""
     used = [
         c
         for c in columns
-        if any(_value(m, c[1], c[2]) is not None for ms in rows.values() for m in ms)
+        if any(_value(m, c[1], c[2]) is not None for gs in rows.values() for g in gs for m in g)
     ]
     lines = ["| | " + " | ".join(c[0] for c in used) + " |", "|---|" + "---:|" * len(used)]
-    for label, group in rows.items():
-        cells = []
-        for _, metric_group, name, multiplier, fmt in used:
-            values = [v for m in group if (v := _value(m, metric_group, name)) is not None]
-            cells.append(format(multiplier * sum(values) / len(values), fmt) if values else "-")
+    for label, groups in rows.items():
+        cells = [_cell(groups, *column[1:]) for column in used]
         lines.append(f"| {label} | " + " | ".join(cells) + " |")
     return "\n".join(lines)
 
@@ -337,19 +374,47 @@ def summarize(results: dict[str, dict[str, Metrics]], profile: str = "") -> str:
 
     A variant is averaged over the scenes it was run on.
     """
-    scenes = list(results)
-    variants = [v for v in VARIANTS if any(v in results[s] for s in scenes)]
-    parts = [f"# Benchmark results ({profile} profile)" if profile else "# Benchmark results", ""]
+    title = f"# Benchmark results ({profile} profile)" if profile else "# Benchmark results"
+    return _report({0: results}, title)
+
+
+def summarize_seeds(runs: dict[int, dict[str, dict[str, Metrics]]], profile: str = "") -> str:
+    """Markdown report of the same benchmark run with several seeds.
+
+    A cell is the mean ± standard deviation over the seeds; for the variants, of the average
+    over the scenes of each seed.
+    """
+    seeds = ", ".join(str(seed) for seed in runs)
+    title = f"# Benchmark results ({profile + ' profile, ' if profile else ''}seeds {seeds})"
+    note = (
+        "A seed changes the layout, the textures and the camera shake of every scene. A cell "
+        "is the mean ± standard deviation over the seeds; for the variants, of the average "
+        "over the scenes of each seed.\n"
+    )
+    return _report(runs, title, note)
+
+
+def _report(runs: dict[int, dict[str, dict[str, Metrics]]], title: str, note: str = "") -> str:
+    by_seed = list(runs.values())
+    scenes = list(dict.fromkeys(s for results in by_seed for s in results))
+    variants = [v for v in VARIANTS if any(v in r.get(s, {}) for r in by_seed for s in scenes)]
+    parts = [title, ""] + ([note] if note else [])
     reference = "full" if "full" in variants else variants[0]
     parts.append(f"## Per scene, `{reference}` pipeline\n")
-    for title, columns in _COLUMNS.items():
-        rows = {s: [results[s][reference]] for s in scenes if reference in results[s]}
-        parts += [f"**{title}**\n", _table(rows, columns), ""]
+    for heading, columns in _COLUMNS.items():
+        rows = {
+            s: [[r[s][reference]] for r in by_seed if reference in r.get(s, {})] for s in scenes
+        }
+        rows = {s: groups for s, groups in rows.items() if groups}
+        parts += [f"**{heading}**\n", _table(rows, columns), ""]
     if len(variants) > 1:
         parts.append("## Variants, averaged over the scenes\n")
-        for title, columns in _COLUMNS.items():
-            rows = {v: [results[s][v] for s in scenes if v in results[s]] for v in variants}
-            parts += [f"**{title}**\n", _table(rows, columns), ""]
+        for heading, columns in _COLUMNS.items():
+            rows = {
+                v: [[r[s][v] for s in scenes if v in r.get(s, {})] for r in by_seed]
+                for v in variants
+            }
+            parts += [f"**{heading}**\n", _table(rows, columns), ""]
         parts.append("Variants:\n")
         parts += [f"- `{name}`: {VARIANTS[name][0]}" for name in variants]
         parts.append("")
