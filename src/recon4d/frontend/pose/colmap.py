@@ -79,13 +79,12 @@ def run_colmap(
             params = [float(K[0, 0]), float(K[1, 1]), float(K[0, 2]), float(K[1, 2])]
         reader = pycolmap.ImageReaderOptions()
         _set(reader, camera_model="PINHOLE", camera_params=",".join(repr(p) for p in params))
-        pycolmap.extract_features(
-            database,
-            image_dir,
-            camera_mode=pycolmap.CameraMode.SINGLE,
-            camera_model="PINHOLE",
-            reader_options=reader,
-        )
+        extract = {"camera_mode": pycolmap.CameraMode.SINGLE, "reader_options": reader}
+        # pycolmap 3 overrides the model of the reader options with an argument of its own
+        # (SIMPLE_RADIAL by default); pycolmap 4 has no such argument.
+        if "camera_model" in (pycolmap.extract_features.__doc__ or ""):
+            extract["camera_model"] = "PINHOLE"
+        pycolmap.extract_features(database, image_dir, **extract)
         if matcher == "sequential":
             pycolmap.match_sequential(database)
         else:

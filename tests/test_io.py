@@ -174,15 +174,18 @@ def test_colmap_backend_without_pycolmap(monkeypatch):
         colmap_poses(torch.rand(3, HEIGHT, WIDTH, 3))
 
 
-def test_colmap_backend_with_stubbed_bindings(monkeypatch, tmp_path):
+@pytest.mark.parametrize("version", [3, 4])
+def test_colmap_backend_with_stubbed_bindings(monkeypatch, tmp_path, version):
     """The glue around pycolmap, with the bindings replaced by a stub that "reconstructs"
-    a known model and leaves one frame out."""
+    a known model and leaves one frame out. pycolmap 3 takes the camera model as an argument
+    of ``extract_features``, pycolmap 4 only through the reader options."""
     K, w2c, _, _ = toy_reconstruction()
     calls: dict[str, object] = {}
 
     class Options:
         ba_refine_focal_length = True
         ba_refine_principal_point = True
+        camera_model = "SIMPLE_RADIAL"
         camera_params = ""
 
     class Reconstruction:
@@ -194,9 +197,15 @@ def test_colmap_backend_with_stubbed_bindings(monkeypatch, tmp_path):
             names = [frame_name(i) for i in keep]
             write_model(path, ColmapModel(K, WIDTH, HEIGHT, names, w2c[keep]))
 
-    def extract_features(database, image_dir, camera_mode, camera_model, reader_options):
+    def extract_features_3(database, image_dir, camera_mode, camera_model, reader_options):
+        """extract_features(database_path, image_path, camera_mode, camera_model: str, ...)"""
         calls["frames"] = sorted(p.name for p in image_dir.iterdir())
         calls["camera"] = (camera_mode, camera_model, reader_options.camera_params)
+
+    def extract_features_4(database, image_dir, camera_mode, reader_options):
+        """extract_features(database_path, image_path, camera_mode, reader_options, ...)"""
+        calls["frames"] = sorted(p.name for p in image_dir.iterdir())
+        calls["camera"] = (camera_mode, reader_options.camera_model, reader_options.camera_params)
 
     def incremental_mapping(database, image_dir, output, options):
         calls["options"] = options
@@ -206,7 +215,7 @@ def test_colmap_backend_with_stubbed_bindings(monkeypatch, tmp_path):
         ImageReaderOptions=Options,
         IncrementalPipelineOptions=Options,
         CameraMode=types.SimpleNamespace(SINGLE="single"),
-        extract_features=extract_features,
+        extract_features=extract_features_3 if version == 3 else extract_features_4,
         match_sequential=lambda database: calls.setdefault("matcher", "sequential"),
         match_exhaustive=lambda database: calls.setdefault("matcher", "exhaustive"),
         incremental_mapping=incremental_mapping,
