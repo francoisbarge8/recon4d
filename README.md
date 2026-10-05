@@ -268,7 +268,7 @@ in-domain depth network, runs every variant with one worker per GPU and zips the
 ```bash
 python scripts/train_depth.py --out assets/checkpoints/tiny_depth.pth
 python scripts/run_benchmark_multi_gpu.py --out results/gpu --profile gpu --lpips alex \
-    depth=learned depth_checkpoint=assets/checkpoints/tiny_depth.pth flow=raft
+    depth=learned depth_checkpoint=assets/checkpoints/tiny_depth.pth
 ```
 
 ## Repository layout

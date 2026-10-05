@@ -8,7 +8,7 @@ Without a GPU, ``--workers`` CPU processes share the cores.
 Examples::
 
     python scripts/run_benchmark_multi_gpu.py --out results/gpu --profile gpu --lpips alex \\
-        depth=learned depth_checkpoint=assets/checkpoints/tiny_depth.pth flow=raft
+        depth=learned depth_checkpoint=assets/checkpoints/tiny_depth.pth
     python scripts/run_benchmark_multi_gpu.py --out results/cpu/seed1 --profile cpu \\
         --gpus 0 --workers 4 --seed 1
 """
