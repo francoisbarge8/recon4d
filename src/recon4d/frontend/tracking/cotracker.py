@@ -29,6 +29,9 @@ class CoTrackerConfig:
         keyframe_interval: a query grid is seeded every this many frames.
         visibility_threshold: predicted visibility above which a point counts as visible.
         chunk: maximum number of query points per forward pass.
+        max_point_frames: cap on query points x frames per forward pass. CoTracker's
+            correlation volume grows with both: 4096 points over the 60 frames of the
+            ``gpu`` profile need more than the 15 GB of a T4.
     """
 
     model: str = "cotracker3_offline"
@@ -37,6 +40,11 @@ class CoTrackerConfig:
     keyframe_interval: int = 8
     visibility_threshold: float = 0.5
     chunk: int = 4096
+    max_point_frames: int = 100_000
+
+    def points_per_pass(self, n_frames: int) -> int:
+        """Query points tracked per forward pass for a video of ``n_frames`` frames."""
+        return max(1, min(self.chunk, self.max_point_frames // max(n_frames, 1)))
 
 
 class CoTracker(PointTracker):
@@ -56,7 +64,7 @@ class CoTracker(PointTracker):
         video = (images.permute(0, 3, 1, 2)[None] * 255.0).to(self.device)
         queries = torch.cat([query_frames[:, None].to(query_uv.dtype), query_uv - 0.5], dim=1)
         uv, visible = [], []
-        for part in torch.split(queries, self.cfg.chunk):
+        for part in torch.split(queries, self.cfg.points_per_pass(len(images))):
             tracks, visibility = self.model(
                 video, queries=part[None].to(self.device), backward_tracking=True
             )
