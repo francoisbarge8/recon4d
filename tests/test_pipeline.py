@@ -233,6 +233,14 @@ def test_every_variant_is_a_valid_configuration():
             assert isinstance(cfg, PipelineConfig), name
 
 
+def test_a_depth_variant_overrides_the_checkpoint_of_the_base_configuration():
+    # The notebook runs every variant on top of the learned network and its checkpoint.
+    base = ["depth=learned", "depth_checkpoint=assets/checkpoints/tiny_depth.pth"]
+    cfg = apply_overrides(PipelineConfig(), [*base, *VARIANTS["depth-anything"][1]])
+    assert cfg.depth == "depth-anything"
+    assert cfg.depth_checkpoint == "depth-anything/Depth-Anything-V2-Small-hf"
+
+
 def test_command_line_interface(tmp_path):
     runner = CliRunner()
     result = runner.invoke(app, ["config", str(tmp_path / "default.yaml")])

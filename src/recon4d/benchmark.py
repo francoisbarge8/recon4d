@@ -20,6 +20,7 @@ from pathlib import Path
 from recon4d.config import apply_overrides
 from recon4d.data.synthetic import SyntheticConfig, build_synthetic_sequence
 from recon4d.evaluation import EvalConfig, Metrics, evaluate_frontend, evaluate_scene
+from recon4d.frontend.depth.depth_anything import DEFAULT_CHECKPOINT as DEPTH_ANYTHING
 from recon4d.pipeline import PipelineConfig, run_pipeline
 from recon4d.report import save_run
 from recon4d.utils import get_logger, load_json, save_json
@@ -132,7 +133,8 @@ VARIANTS: dict[str, tuple[str, tuple[str, ...]]] = {
     # Back-end swaps: these need pretrained weights (downloaded on first use) or pycolmap.
     "depth-anything": (
         "zero-shot Depth Anything V2 (small) instead of the default depth back-end",
-        ("depth=depth-anything",),
+        # Its own checkpoint: the base configuration may name the learned network's.
+        ("depth=depth-anything", f"depth_checkpoint={DEPTH_ANYTHING}"),
     ),
     "cotracker": ("CoTracker3 as the dense tracker", ("tracker=cotracker",)),
     "raft": ("RAFT optical flow instead of DIS", ("flow=raft",)),
