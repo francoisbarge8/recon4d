@@ -84,13 +84,14 @@ explains every stage and the reasons behind the design.
 
 ## Results
 
-The complete benchmark at the `cpu` profile: 4 scenes x 12 variants x 3 seeds, that is 144
-reconstructions of 24 frames at 128 x 96 with 800 optimisation steps, run on a 4-core CPU
-without a GPU (53 minutes, one process per scene). A seed changes the layout, the textures
-and the camera shake of every scene; each number is the **mean ± standard deviation over
-the 3 seeds**. Depth comes from the noisy oracle (the default of this profile, see
-[docs/BENCHMARK.md](docs/BENCHMARK.md)). Every metric of every variant:
-[results/cpu/results.md](results/cpu/results.md); the metrics of each run:
+The complete benchmark at the `cpu` profile: 4 scenes x 15 variants x 3 seeds, run on a
+4-core CPU without a GPU, plus the same benchmark with the depth predicted by a network
+(below), 348 reconstructions in all, each of 24 frames at 128 x 96 with 800 optimisation
+steps. A seed changes the layout, the textures and the camera shake of every scene; each
+number is the **mean ± standard deviation over the 3 seeds**. LPIPS uses AlexNet. Depth
+comes from the noisy oracle (the default of this profile, see
+[docs/BENCHMARK.md](docs/BENCHMARK.md)) unless stated otherwise. Every metric of every
+variant: [results/cpu/results.md](results/cpu/results.md); the metrics of each run:
 `results/cpu/seed*/results.json`; the commands:
 [docs/BENCHMARK.md](docs/BENCHMARK.md#several-seeds).
 
@@ -103,53 +104,52 @@ the 3 seeds**. Depth comes from the noisy oracle (the default of this profile, s
 **Default pipeline** (KLT + flow chaining with DIS, SfM + bundle adjustment, depth
 alignment, motion segmentation, 4D Gaussians), per scene:
 
-| | ATE (cm) | aligned depth AbsRel (%) | PSNR held-out frames | PSNR held-out cameras | PSNR moving objects | Chamfer (cm) | 3D EPE (cm) | mask IoU |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| still | 0.52 ± 0.04 | 2.6 ± 1.4 | 26.66 ± 0.73 | 23.39 ± 1.05 | - | 7.6 ± 3.6 | - | - |
-| rolling | 0.47 ± 0.04 | 2.4 ± 0.9 | 25.04 ± 0.36 | 22.38 ± 0.76 | 17.53 ± 1.12 | 6.6 ± 2.3 | 35.9 ± 14.7 | 0.726 ± 0.019 |
-| sliding | 0.60 ± 0.11 | 3.3 ± 1.5 | 25.16 ± 0.45 | 21.74 ± 1.57 | 17.92 ± 0.25 | 8.7 ± 3.3 | 41.4 ± 14.4 | 0.769 ± 0.013 |
-| squash | 0.78 ± 0.21 | 2.8 ± 0.8 | 26.10 ± 0.27 | 22.18 ± 0.87 | 17.87 ± 0.76 | 9.1 ± 1.4 | 17.4 ± 5.6 | 0.725 ± 0.010 |
+|  | ATE (cm) | aligned depth AbsRel (%) | PSNR held-out frames | PSNR held-out cameras | LPIPS held-out cameras | PSNR moving objects | Chamfer (cm) | 3D EPE (cm) | mask IoU |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| still | 0.52 ± 0.04 | 2.6 ± 1.4 | 26.65 ± 0.74 | 23.43 ± 1.01 | 0.093 ± 0.006 | - | 7.6 ± 3.6 | - | - |
+| rolling | 0.47 ± 0.04 | 2.4 ± 0.9 | 25.02 ± 0.41 | 22.36 ± 0.79 | 0.119 ± 0.009 | 17.47 ± 1.15 | 6.6 ± 2.2 | 36.2 ± 14.5 | 0.726 ± 0.019 |
+| sliding | 0.60 ± 0.11 | 3.3 ± 1.5 | 25.18 ± 0.50 | 21.73 ± 1.58 | 0.121 ± 0.005 | 17.94 ± 0.29 | 8.6 ± 3.3 | 41.6 ± 14.3 | 0.769 ± 0.013 |
+| squash | 0.78 ± 0.21 | 2.8 ± 0.8 | 26.16 ± 0.35 | 22.25 ± 0.91 | 0.112 ± 0.014 | 17.98 ± 0.74 | 9.1 ± 1.4 | 17.8 ± 5.9 | 0.725 ± 0.010 |
 
-PSNR on held-out cameras is computed on the pixels the video observes; "moving objects"
-restricts it to them. 3D EPE: true surface points handed to the scene's motion field and
-compared with their true trajectory over the whole video.
+PSNR and LPIPS on held-out cameras are computed on the pixels the video observes; "moving
+objects" restricts them to those objects. 3D EPE: true surface points handed to the
+scene's motion field and compared with their true trajectory over the whole video.
 
 **Where the error comes from.** One stage at a time is replaced by its ground truth,
 averaged over the four scenes:
 
-| | PSNR held-out cameras | PSNR moving objects | Chamfer (cm) | Chamfer moving (cm) | 3D EPE (cm) | track δ_avg |
-|---|---:|---:|---:|---:|---:|---:|
-| `full` | 22.42 ± 0.22 | 17.77 ± 0.62 | 8.0 ± 0.6 | 12.6 ± 2.4 | 31.6 ± 7.6 | 0.429 ± 0.016 |
-| `oracle-depth` | 22.53 ± 0.18 | 17.92 ± 0.72 | 7.8 ± 0.9 | 12.1 ± 1.7 | 28.5 ± 1.6 | 0.430 ± 0.016 |
-| `oracle-poses` | 23.75 ± 0.14 | 18.15 ± 0.62 | 5.2 ± 0.1 | 10.4 ± 1.7 | 28.0 ± 7.3 | 0.430 ± 0.016 |
-| `oracle-tracks` | 24.16 ± 0.12 | 19.32 ± 0.41 | 4.4 ± 0.0 | 4.0 ± 0.3 | 6.7 ± 1.0 | 1.000 ± 0.000 |
-| `oracle-all` | 24.57 ± 0.11 | 21.03 ± 0.15 | 3.4 ± 0.0 | 2.8 ± 0.3 | 2.7 ± 0.8 | 1.000 ± 0.000 |
-| `static-only` | 20.26 ± 0.28 | 11.24 ± 0.55 | 8.3 ± 0.7 | - | 74.2 ± 0.2 | 0.483 ± 0.009 |
+|  | PSNR held-out cameras | LPIPS held-out cameras | PSNR moving objects | Chamfer (cm) | Chamfer moving (cm) | 3D EPE (cm) | track δ_avg |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `full` | 22.44 ± 0.25 | 0.111 ± 0.006 | 17.80 ± 0.63 | 8.0 ± 0.6 | 12.1 ± 2.3 | 31.9 ± 7.3 | 0.429 ± 0.016 |
+| `oracle-depth` | 22.50 ± 0.18 | 0.110 ± 0.004 | 17.85 ± 0.72 | 7.8 ± 0.9 | 12.2 ± 1.7 | 28.6 ± 1.4 | 0.430 ± 0.016 |
+| `oracle-poses` | 23.75 ± 0.14 | 0.099 ± 0.004 | 18.15 ± 0.62 | 5.2 ± 0.1 | 10.4 ± 1.7 | 28.0 ± 7.3 | 0.430 ± 0.016 |
+| `oracle-tracks` | 24.16 ± 0.12 | 0.091 ± 0.000 | 19.32 ± 0.41 | 4.4 ± 0.0 | 4.0 ± 0.3 | 6.7 ± 1.0 | 1.000 ± 0.000 |
+| `oracle-all` | 24.57 ± 0.11 | 0.079 ± 0.003 | 21.03 ± 0.15 | 3.4 ± 0.0 | 2.8 ± 0.3 | 2.7 ± 0.8 | 1.000 ± 0.000 |
+| `static-only` | 20.27 ± 0.25 | 0.175 ± 0.013 | 11.22 ± 0.54 | 8.3 ± 0.6 | - | 74.2 ± 0.2 | 0.483 ± 0.009 |
 
 * **Point tracking is the bottleneck.** Exact tracks and flow (which also make the SfM
   poses exact) bring the 3D trajectory error from 32 cm to 7 cm and the moving surfaces
-  from 12.6 cm to 4.0 cm. The dense tracker chains optical flow and drops points at
+  from 12.1 cm to 4.0 cm. The dense tracker chains optical flow and drops points at
   occlusions (TAP-Vid δ_avg 0.43).
 * Exact poses mostly help the static geometry (Chamfer 8.0 to 5.2 cm, +1.3 dB on the
   held-out cameras), although the estimated trajectory is already within 0.6 cm.
-* Exact depth changes little (+0.1 dB): once aligned to the poses, the noisy depth is
-  already within 2.8% of the truth.
+* Exact depth changes little (less than 0.1 dB): once aligned to the poses, the noisy
+  depth is already within 2.8% of the truth.
 * With every input exact, the moving objects (21.0 dB) remain 3.5 dB below the whole image:
   that gap belongs to the scene optimisation at this budget.
 * Ignoring the motion (`static-only`, plain 3DGS) costs 2.2 dB on the held-out cameras and
-  6.5 dB on the moving objects.
+  6.6 dB on the moving objects.
 
-**Ablations and pose back-ends**, averaged over the four scenes:
+**Ablations**, averaged over the four scenes:
 
-| | ATE (cm) | RPE-r (deg) | aligned depth AbsRel (%) | PSNR held-out cameras | PSNR moving objects | Chamfer (cm) | 3D EPE (cm) |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| `full` | 0.59 ± 0.07 | 0.077 ± 0.003 | 2.8 ± 0.5 | 22.42 ± 0.22 | 17.77 ± 0.62 | 8.0 ± 0.6 | 31.6 ± 7.6 |
-| `no-depth-loss` | 0.59 ± 0.07 | 0.077 ± 0.003 | 2.8 ± 0.5 | 22.37 ± 0.24 | 17.56 ± 0.74 | 8.1 ± 0.4 | 32.1 ± 7.1 |
-| `no-track-loss` | 0.59 ± 0.07 | 0.077 ± 0.003 | 2.8 ± 0.5 | 22.21 ± 0.12 | 16.33 ± 0.41 | 7.6 ± 0.5 | 31.3 ± 6.0 |
-| `no-rigidity` | 0.59 ± 0.07 | 0.077 ± 0.003 | 2.8 ± 0.5 | 22.40 ± 0.22 | 17.94 ± 0.61 | 8.0 ± 0.6 | 34.0 ± 5.5 |
-| `no-depth-correction` | 0.59 ± 0.07 | 0.077 ± 0.003 | 4.1 ± 0.5 | 22.01 ± 0.20 | 16.89 ± 0.67 | 7.7 ± 0.3 | 35.8 ± 10.6 |
-| `depth-prior-ba` | 0.63 ± 0.18 | 0.075 ± 0.021 | 2.6 ± 1.4 | 22.42 ± 1.55 | 17.47 ± 0.95 | 10.1 ± 5.3 | 34.8 ± 5.6 |
-| `colmap` | 2.05 ± 0.90 | 0.215 ± 0.030 | 4.4 ± 2.8 | 21.33 ± 1.63 | 16.62 ± 1.36 | 14.7 ± 8.4 | 33.6 ± 8.6 |
+|  | aligned depth AbsRel (%) | PSNR held-out cameras | LPIPS held-out cameras | PSNR moving objects | Chamfer (cm) | 3D EPE (cm) |
+|---|---:|---:|---:|---:|---:|---:|
+| `full` | 2.8 ± 0.5 | 22.44 ± 0.25 | 0.111 ± 0.006 | 17.80 ± 0.63 | 8.0 ± 0.6 | 31.9 ± 7.3 |
+| `no-depth-loss` | 2.8 ± 0.5 | 22.38 ± 0.24 | 0.115 ± 0.004 | 17.60 ± 0.74 | 8.2 ± 0.4 | 32.3 ± 7.0 |
+| `no-track-loss` | 2.8 ± 0.5 | 22.25 ± 0.09 | 0.112 ± 0.004 | 16.36 ± 0.47 | 7.6 ± 0.5 | 31.3 ± 6.0 |
+| `no-rigidity` | 2.8 ± 0.5 | 22.43 ± 0.24 | 0.115 ± 0.006 | 17.96 ± 0.57 | 8.0 ± 0.6 | 33.9 ± 5.4 |
+| `no-depth-correction` | 4.1 ± 0.5 | 22.00 ± 0.17 | 0.118 ± 0.003 | 16.86 ± 0.68 | 7.7 ± 0.3 | 35.9 ± 10.6 |
+| `depth-prior-ba` | 2.6 ± 1.4 | 22.37 ± 1.56 | 0.113 ± 0.009 | 17.28 ± 1.13 | 10.1 ± 5.3 | 34.7 ± 5.7 |
 
 * The track loss is what animates the moving objects: without it they lose 1.4 dB.
 * The depth correction field brings the aligned depth from 4.1% to 2.8% AbsRel (+0.4 dB on
@@ -158,41 +158,61 @@ averaged over the four scenes:
   over the seeds at this budget.
 * The monocular depth prior in bundle adjustment does not help on average and makes the
   geometry unpredictable (Chamfer 10.1 ± 5.3 cm against 8.0 ± 0.6 cm), which is why it is
-  off by default.
-* COLMAP is close to the track-based SfM on the static scene (ATE 0.75 against 0.52 cm);
+  off by default (but see the learned depth below).
+
+**Back-ends**: one stage of the default pipeline replaced by a pretrained model or by
+COLMAP, averaged over the four scenes:
+
+|  | raw depth AbsRel (%) | ATE (cm) | RPE-r (deg) | track δ_avg | PSNR held-out cameras | PSNR moving objects | Chamfer (cm) | 3D EPE (cm) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `full` | 3.5 ± 0.3 | 0.59 ± 0.07 | 0.077 ± 0.003 | 0.429 ± 0.016 | 22.44 ± 0.25 | 17.80 ± 0.63 | 8.0 ± 0.6 | 31.9 ± 7.3 |
+| `depth-anything` | 2.3 ± 0.1 | 0.59 ± 0.07 | 0.077 ± 0.003 | 0.431 ± 0.016 | 21.81 ± 0.24 | 16.40 ± 0.65 | 8.1 ± 0.7 | 35.0 ± 5.8 |
+| `raft` | 3.5 ± 0.3 | 0.59 ± 0.07 | 0.077 ± 0.003 | 0.431 ± 0.016 | 22.10 ± 0.44 | 16.86 ± 0.48 | 8.0 ± 0.7 | 45.9 ± 10.2 |
+| `cotracker` | 3.5 ± 0.3 | 0.59 ± 0.07 | 0.077 ± 0.003 | 0.832 ± 0.010 | 22.53 ± 0.17 | 18.46 ± 0.23 | 7.9 ± 0.8 | 11.0 ± 1.8 |
+| `colmap` | 3.5 ± 0.3 | 2.03 ± 0.78 | 0.217 ± 0.027 | 0.423 ± 0.013 | 21.23 ± 1.37 | 16.50 ± 1.42 | 14.8 ± 8.3 | 37.1 ± 8.4 |
+
+* **CoTracker3 removes most of the tracking error**: TAP-Vid δ_avg 0.83 against 0.43, 3D
+  trajectory error 11 cm against 32 cm, +0.7 dB on the moving objects. On this CPU it
+  costs about 10 minutes of tracking per run against a few seconds for flow chaining,
+  which is why it is not the default here.
+* RAFT (small) does worse than DIS at this resolution: 3D trajectory error 46 cm against
+  32 cm, -0.9 dB on the moving objects. The `gpu` profile (384 x 288) is the fairer test.
+* COLMAP is close to the track-based SfM on the static scene (ATE 0.76 against 0.52 cm);
   the gap grows with the moving objects, which COLMAP is not told about (4.4 against
   0.8 cm on `squash`).
 
-**Depth predicted from pixels.** The same benchmark with the in-domain U-Net as depth
-back-end (`depth=learned`, the setting of the Kaggle notebook), trained here on CPU for 12
-epochs instead of 40 (2400 frames of random scenes, 1.8% AbsRel on its validation scenes).
-Every table: [results/cpu-learned/results.md](results/cpu-learned/results.md).
+**Depth predicted from pixels.** The default depth is a noise model of a monocular
+network. Two real networks instead: Depth Anything V2 (zero-shot) as a variant of the
+benchmark above, and the in-domain U-Net (`depth=learned`, the setting of the Kaggle
+notebook) as the depth back-end of a second complete run, trained here on CPU for 12 epochs
+instead of 40 (2400 frames of random scenes, 1.8% AbsRel on its validation scenes). Every
+table of that run: [results/cpu-learned/results.md](results/cpu-learned/results.md).
 
-| depth back-end | raw depth AbsRel (%) | aligned depth AbsRel (%) | PSNR held-out cameras | PSNR moving objects | Chamfer (cm) | 3D EPE (cm) |
-|---|---:|---:|---:|---:|---:|---:|
-| noisy oracle (default of the profile) | 3.5 ± 0.3 | 2.8 ± 0.5 | 22.42 ± 0.22 | 17.77 ± 0.62 | 8.0 ± 0.6 | 31.6 ± 7.6 |
-| in-domain U-Net | 2.1 ± 0.2 | 2.8 ± 0.4 | 22.07 ± 0.16 | 16.55 ± 0.16 | 8.1 ± 0.6 | 40.5 ± 7.8 |
-| in-domain U-Net, depth prior in BA | 2.1 ± 0.2 | 2.1 ± 0.2 | 22.57 ± 0.26 | 16.73 ± 0.17 | 6.3 ± 0.3 | 36.8 ± 4.8 |
+| depth back-end | raw depth AbsRel (%) | aligned depth AbsRel (%) | PSNR held-out cameras | LPIPS held-out cameras | PSNR moving objects | Chamfer (cm) | 3D EPE (cm) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| noisy oracle (default of the profile) | 3.5 ± 0.3 | 2.8 ± 0.5 | 22.44 ± 0.25 | 0.111 ± 0.006 | 17.80 ± 0.63 | 8.0 ± 0.6 | 31.9 ± 7.3 |
+| Depth Anything V2 (small) | 2.3 ± 0.1 | 3.0 ± 0.5 | 21.81 ± 0.24 | 0.121 ± 0.002 | 16.40 ± 0.65 | 8.1 ± 0.7 | 35.0 ± 5.8 |
+| in-domain U-Net | 2.1 ± 0.2 | 2.8 ± 0.4 | 22.08 ± 0.13 | 0.117 ± 0.003 | 16.57 ± 0.13 | 8.1 ± 0.6 | 39.4 ± 6.7 |
+| in-domain U-Net, depth prior in BA | 2.1 ± 0.2 | 2.1 ± 0.2 | 22.54 ± 0.27 | 0.113 ± 0.002 | 16.75 ± 0.02 | 6.3 ± 0.3 | 36.6 ± 4.6 |
 
-* The network beats the noise model on the static scene (2.0% against 3.5% AbsRel on the
-  static pixels of the three dynamic scenes, and far more consistent from frame to frame)
-  but not on the moving objects (5.1% against 3.7%), which is where it loses end to end: 1.2 dB on the moving
-  objects, 41 cm of 3D trajectory error against 32.
-* With this network, the depth prior in bundle adjustment **helps**: Chamfer 8.1 to
-  6.3 cm, +0.5 dB on the held-out cameras, aligned depth 2.8% to 2.1%, with a small
-  spread. With the noise model it made the geometry unpredictable (above). It stays off by
-  default, the default depth of the profile being the noise model; with a network, turn it
-  on with `sfm.depth_weight=10`.
-* The network has to run at the size it was trained at (192 x 144): applied to the
-  128 x 96 frames directly, its error on a benchmark scene went from 1.5% to 4.3% (and to
-  5.5% on the 384 x 288 frames of the `gpu` profile). The `learned` back-end now resizes
-  the frames.
+* Both networks beat the noise model on raw depth (2.3% and 2.1% against 3.5%) and lose
+  end to end, mostly on the moving objects (-1.4 and -1.2 dB). For the U-Net the error
+  sits there: 2.0% against 3.5% AbsRel on the static pixels of the three dynamic scenes,
+  5.1% against 3.7% on the moving objects.
+* With the U-Net, the depth prior in bundle adjustment **helps**: Chamfer 8.1 to 6.3 cm,
+  +0.5 dB on the held-out cameras, aligned depth 2.8% to 2.1%, with a small spread. With
+  the noise model it made the geometry unpredictable (above). It stays off by default, the
+  default depth of the profile being the noise model; with a network, turn it on with
+  `sfm.depth_weight=10`.
+* The U-Net has to run at the size it was trained at (192 x 144): applied to the 128 x 96
+  frames directly, its error on a benchmark scene went from 1.5% to 4.3% (and to 5.5% on
+  the 384 x 288 frames of the `gpu` profile). The `learned` back-end now resizes the
+  frames.
 
 **Not run yet.** The full-size `gpu` profile (60 frames at 384 x 288, 7000 steps) needs a
-GPU: it is what [the Kaggle notebook](notebooks/kaggle_benchmark.ipynb) runs. The container
-used for the CPU runs could not download pretrained weights (Hugging Face and
-download.pytorch.org were out of reach), so LPIPS and the `depth-anything`, `cotracker` and
-`raft` variants are missing too, as is the cross-check against gsplat (CUDA only).
+GPU: it is what [the Kaggle notebook](notebooks/kaggle_benchmark.ipynb) runs, as does the
+cross-check against gsplat (CUDA only). CoTracker3 was not combined with the learned depth
+on CPU (12 more runs of about 10 minutes each).
 
 ## Installation
 

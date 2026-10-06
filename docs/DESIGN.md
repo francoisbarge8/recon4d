@@ -252,7 +252,8 @@ See [BENCHMARK.md](BENCHMARK.md). Two principles:
 * **Flow chaining** cannot recover a point after an occlusion; the motion bases bridge the
   gaps, a long-range tracker (`cotracker`) does better. On the `cpu` benchmark the dense
   tracks are the largest source of error: replacing the tracks and the optical flow by
-  the ground truth brings the 3D trajectory error from 32 cm to 7 cm.
+  the ground truth brings the 3D trajectory error from 32 cm to 7 cm, and CoTracker3
+  brings it to 11 cm (at about 10 minutes of tracking per run on a CPU).
 * **No photometric pose refinement.** Poses are fixed after bundle adjustment, although
   the rasterizer is differentiable with respect to them.
 * **Synthetic benchmark.** The ground truth is exact and the image formation is

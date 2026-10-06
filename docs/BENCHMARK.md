@@ -152,6 +152,11 @@ done
 recon4d collect results/cpu --seeds --profile cpu  # mean ± std over the seeds
 ```
 
+On a CPU, the `cotracker` variant needs about 7 GB of memory per run: run it on its own
+(`--variants cotracker`, one process) rather than with one worker per scene. Where
+torch.hub cannot download from GitHub, point it to a clone of the CoTracker repository
+with `cotracker.repo=<path>`; its weights still come from Hugging Face.
+
 ## The depth back-ends of the benchmark
 
 * `oracle-noisy` (default of the CPU profile): ground-truth depth degraded by a model of
