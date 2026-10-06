@@ -201,3 +201,47 @@ def test_grid_queries():
     assert torch.equal(grid[0], torch.tensor([4.5, 4.5]))
     inner = grid_queries(48, 64, 8, margin=6)
     assert len(inner) < len(grid) and inner.min() >= 6
+
+
+def test_cotracker_loads_from_github_or_from_a_local_clone(tmp_path, monkeypatch):
+    from recon4d.frontend.tracking.cotracker import CoTracker, CoTrackerConfig
+
+    calls = []
+
+    def fake_load(repo, model, source):
+        calls.append((repo, model, source))
+        return torch.nn.Identity()
+
+    monkeypatch.setattr(torch.hub, "load", fake_load)
+    CoTracker()
+    CoTracker(CoTrackerConfig(repo=str(tmp_path)))
+    assert calls == [
+        ("facebookresearch/co-tracker", "cotracker3_offline", "github"),
+        (str(tmp_path), "cotracker3_offline", "local"),
+    ]
+
+
+def test_cotracker_bounds_points_times_frames_per_pass(monkeypatch):
+    from recon4d.frontend.tracking.cotracker import CoTracker, CoTrackerConfig
+
+    cfg = CoTrackerConfig()
+    assert cfg.points_per_pass(24) == cfg.chunk  # the cpu profile is unchanged
+    assert cfg.points_per_pass(60) * 60 <= cfg.max_point_frames
+    assert CoTrackerConfig(max_point_frames=10).points_per_pass(60) == 1
+
+    passes = []
+
+    class FakeModel(torch.nn.Module):
+        def forward(self, video, queries, backward_tracking):
+            n_frames, n_points = video.shape[1], queries.shape[1]
+            passes.append(n_points)
+            uv = queries[:, None, :, 1:].expand(1, n_frames, n_points, 2)
+            return uv, torch.ones(1, n_frames, n_points, dtype=torch.bool)
+
+    monkeypatch.setattr(torch.hub, "load", lambda repo, model, source: FakeModel())
+    tracker = CoTracker(CoTrackerConfig(max_point_frames=100))
+    images = torch.zeros(10, 16, 16, 3)
+    frames = torch.zeros(25, dtype=torch.long)
+    tracks = tracker.track_queries(images, frames, torch.rand(25, 2) * 16)
+    assert passes == [10, 10, 5]
+    assert tracks.uv.shape == (25, 10, 2)

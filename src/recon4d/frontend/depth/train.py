@@ -218,7 +218,7 @@ def train_depth_network(
             loss.backward()
             optimizer.step()
             scheduler.step()
-            running += float(loss)
+            running += float(loss.detach())
         metrics = evaluate(model, val_images, val_depth, device)
         logger.info(
             "epoch %3d | loss %.4f | val abs_rel %.4f delta1 %.3f",
@@ -229,5 +229,10 @@ def train_depth_network(
         )
         if metrics["abs_rel"] < best["abs_rel"]:
             best = {**metrics, "epoch": epoch + 1}
-            save_checkpoint(out, model, {"val": best, "train_images": len(train_images)})
+            meta = {
+                "val": best,
+                "train_images": len(train_images),
+                "image_size": [cfg.height, cfg.width],
+            }
+            save_checkpoint(out, model, meta)
     return best

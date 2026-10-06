@@ -163,12 +163,17 @@ def benchmark(
 def collect(
     out: Annotated[Path, typer.Argument(help="Benchmark output directory")],
     profile: str = "",
+    seeds: Annotated[
+        bool, typer.Option(help="One benchmark per seed<k> subdirectory: report mean ± std")
+    ] = False,
 ) -> None:
     """Rebuild ``results.json`` and ``results.md`` from the runs found in a directory."""
-    from recon4d.benchmark import collect_results
+    from recon4d.benchmark import collect_results, collect_seeds
 
-    results = collect_results(out, profile)
-    typer.echo(f"{sum(len(v) for v in results.values())} runs collected in {out / 'results.md'}")
+    by_seed = collect_seeds(out, profile) if seeds else {0: collect_results(out, profile)}
+    n_runs = sum(len(v) for results in by_seed.values() for v in results.values())
+    over = f" over {len(by_seed)} seed(s)" if seeds else ""
+    typer.echo(f"{n_runs} runs{over} collected in {out / 'results.md'}")
 
 
 @app.command()

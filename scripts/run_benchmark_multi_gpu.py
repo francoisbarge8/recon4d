@@ -1,13 +1,16 @@
 """Run the benchmark with one worker process per GPU (e.g. a Kaggle notebook with 2x T4).
 
-The scenes are dealt out to the GPUs; every worker writes its runs under the same output
+The scenes are dealt out to the workers; every worker writes its runs under the same output
 directory and the tables are collected at the end. Runs are resumable: a (scene, variant)
 pair that already has a ``metrics.json`` is skipped, so the script can simply be restarted.
+Without a GPU, ``--workers`` CPU processes share the cores.
 
-Example::
+Examples::
 
     python scripts/run_benchmark_multi_gpu.py --out results/gpu --profile gpu --lpips alex \\
-        depth=learned depth_checkpoint=assets/checkpoints/tiny_depth.pth flow=raft
+        depth=learned depth_checkpoint=assets/checkpoints/tiny_depth.pth
+    python scripts/run_benchmark_multi_gpu.py --out results/cpu/seed1 --profile cpu \\
+        --gpus 0 --workers 4 --seed 1
 """
 
 from __future__ import annotations
@@ -32,6 +35,8 @@ def main() -> None:
     parser.add_argument("--variants", default=",".join(DEFAULT_VARIANTS))
     parser.add_argument("--lpips", default=None, help="LPIPS backbone (alex, vgg, squeeze)")
     parser.add_argument("--gpus", type=int, default=None, help="number of GPUs to use")
+    parser.add_argument("--workers", type=int, default=1, help="CPU processes, without a GPU")
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("overrides", nargs="*", help="configuration overrides, key=value")
     args = parser.parse_args()
 
@@ -39,7 +44,7 @@ def main() -> None:
     scenes = args.scenes.split(",")
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    workers = max(n_gpus, 1)
+    workers = n_gpus if n_gpus > 0 else max(args.workers, 1)
     processes = []
     for worker in range(workers):
         mine = scenes[worker::workers]
@@ -60,6 +65,8 @@ def main() -> None:
             args.variants,
             "--device",
             "cuda" if n_gpus > 0 else "cpu",
+            "--seed",
+            str(args.seed),
         ]
         if args.lpips:
             command += ["--lpips", args.lpips]
@@ -67,6 +74,8 @@ def main() -> None:
         env = dict(os.environ)
         if n_gpus > 0:
             env["CUDA_VISIBLE_DEVICES"] = str(worker)
+        else:  # the CPU workers share the cores instead of each claiming all of them
+            env["OMP_NUM_THREADS"] = str(max(1, (os.cpu_count() or 1) // workers))
         log = (out / f"worker{worker}.log").open("w")
         print(f"worker {worker}: scenes {mine} -> {log.name}", flush=True)
         processes.append(

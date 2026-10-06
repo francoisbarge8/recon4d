@@ -1,0 +1,26 @@
+{
+  "exact_support": {
+    "alpha_max_abs_diff": 0.0016451478004455566,
+    "max_abs_diff": 0.0013518333435058594,
+    "mean_abs_diff": 4.349479786469601e-05,
+    "psnr": 83.28477478027344
+  },
+  "forward_ms": {
+    "gsplat": 0.6367549001879524,
+    "recon4d_tile16": 25.65828429942485,
+    "recon4d_tile8": 19.905920399469323
+  },
+  "gaussians": 30000,
+  "gradient": {
+    "cosine_similarity": 0.9999994039535522,
+    "relative_difference": 0.001026493962854147
+  },
+  "height": 288,
+  "three_sigma": {
+    "alpha_max_abs_diff": 0.0016449689865112305,
+    "max_abs_diff": 0.005862802267074585,
+    "mean_abs_diff": 8.303301001433283e-05,
+    "psnr": 72.31716918945312
+  },
+  "width": 384
+}

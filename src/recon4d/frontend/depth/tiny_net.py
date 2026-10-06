@@ -150,7 +150,12 @@ def load_checkpoint(
 
 
 class LearnedDepth(DepthEstimator):
-    """The in-domain :class:`TinyDepthNet`, loaded from a checkpoint."""
+    """The in-domain :class:`TinyDepthNet`, loaded from a checkpoint.
+
+    Frames are resized to the size the network was trained at (``image_size`` in the
+    checkpoint metadata) and the prediction back to the size of the frames: the network
+    learned how large things look in pixels, and at another size its error triples.
+    """
 
     name = "tiny-depth"
     kind = "scale"
@@ -164,11 +169,25 @@ class LearnedDepth(DepthEstimator):
         self.model, self.meta = load_checkpoint(checkpoint, device)
         self.device = device
         self.batch_size = batch_size
+        size = self.meta.get("image_size")
+        # (height, width) of the training images; None runs at the size of the frames.
+        self.image_size = None if size is None else (int(size[0]), int(size[1]))
 
     @torch.no_grad()
     def predict(self, images: Tensor) -> Tensor:
+        size = images.shape[1:3]
         outputs = []
         for batch in torch.split(images, self.batch_size):
-            log_depth = self.model(batch.permute(0, 3, 1, 2).to(self.device))
+            batch = batch.permute(0, 3, 1, 2).to(self.device)
+            resize = self.image_size is not None and tuple(size) != self.image_size
+            if resize:
+                batch = F.interpolate(
+                    batch, self.image_size, mode="bilinear", align_corners=False, antialias=True
+                )
+            log_depth = self.model(batch)
+            if resize:  # log-depth is the smoother quantity to interpolate
+                log_depth = F.interpolate(
+                    log_depth[:, None], size, mode="bilinear", align_corners=False
+                )[:, 0]
             outputs.append(torch.exp(log_depth).cpu())
         return torch.cat(outputs)

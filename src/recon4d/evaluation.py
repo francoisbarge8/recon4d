@@ -13,7 +13,8 @@ Reported groups (all values are floats; lengths are in ground-truth units):
 ``depth_aligned``   depth after alignment to the poses
 ``depth_rendered``  depth rendered from the optimised scene (held-out frames)
 ``tracking``        TAP-Vid metrics of the point tracks
-``motion_mask``     IoU / precision / recall of the dynamic masks
+``motion_mask``     IoU / precision / recall of the dynamic masks (scenes with moving
+                    objects), fraction of the static pixels labelled as moving
 ``nvs_train/test``  PSNR / SSIM / LPIPS on training and held-out frames
 ``nvs_val``         the same on held-out *cameras* at the training timestamps, restricted
                     to co-visible pixels, plus the moving objects alone
@@ -180,10 +181,16 @@ def evaluate_frontend(seq: VideoSequence, frontend: FrontendResult) -> Metrics:
         metrics["tracking"].update({f"dynamic_{k}": v for k, v in dynamic.items()})
         metrics["tracking"]["dynamic_count"] = float(d.sum())
 
-    # Motion segmentation.
-    if gt.dynamic_mask.any() or frontend.dynamic_mask.any():
-        metrics["motion_mask"] = _masked_iou(frontend.dynamic_mask, gt.dynamic_mask)
-        if tracks.dynamic is not None:
+    # Motion segmentation. Without moving objects IoU, precision and recall are undefined
+    # (a single false positive would make them 0); the false-positive rate is not.
+    static = ~gt.dynamic_mask
+    false_positives = float((frontend.dynamic_mask & static).sum())
+    metrics["motion_mask"] = {
+        "false_positive_rate": false_positives / max(float(static.sum()), 1.0)
+    }
+    if gt.dynamic_mask.any():
+        metrics["motion_mask"].update(_masked_iou(frontend.dynamic_mask, gt.dynamic_mask))
+        if tracks.dynamic is not None and truth.dynamic.any():
             labels = _masked_iou(tracks.dynamic, truth.dynamic)
             metrics["motion_mask"].update({f"track_{k}": v for k, v in labels.items()})
     return metrics
@@ -263,7 +270,10 @@ def evaluate_scene(
             for name, value in values.items():
                 val_metrics.setdefault(prefix + name, []).append(value)
         both = camera.covisible[1:] & camera.covisible[:-1]
-        if both.any():
+        # A reference video that never changes (a static scene seen from a fixed camera)
+        # leaves nothing to measure: the metric is undefined there, not infinite.
+        changes = (camera.images[1:] != camera.images[:-1]).any(dim=-1)
+        if (both & changes).any():
             td_psnr.append(float(temporal_difference_psnr(out["color"], camera.images, both)))
     if val_metrics:
         metrics["nvs_val"] = {k: sum(v) / len(v) for k, v in val_metrics.items()}
