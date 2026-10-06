@@ -1,0 +1,27 @@
+{
+  "config": {
+    "batch_size": 16,
+    "cache": "/kaggle/working/depth_cache",
+    "device": "cuda",
+    "epochs": 40,
+    "frames": 6,
+    "height": 144,
+    "lr": 0.002,
+    "out": "assets/checkpoints/tiny_depth.pth",
+    "scenes": 400,
+    "seed": 0,
+    "val_scenes": 40,
+    "width": 192,
+    "workers": 4
+  },
+  "validation": {
+    "abs_rel": 0.011105140240902303,
+    "delta1": 0.9987265504436729,
+    "delta2": 0.9998182508680555,
+    "delta3": 0.9999757366415895,
+    "epoch": 40,
+    "rmse": 0.0825623819062377,
+    "rmse_log": 0.022088647630941864,
+    "sq_rel": 0.001777157355953608
+  }
+}
